@@ -1,6 +1,6 @@
 # database.py
 import aiosqlite
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 
 DB_PATH = "funnel_bot.db"
@@ -17,9 +17,16 @@ async def init_db():
                 дата_входа TEXT NOT NULL,
                 оффер TEXT,
                 статус_подписки INTEGER DEFAULT 0,
-                этап_воронки INTEGER DEFAULT 1
+                этап_воронки INTEGER DEFAULT 1,
+                is_blocked INTEGER DEFAULT 0
             )
         """)
+        # Perform dynamic migration if is_blocked is missing in existing setups
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN is_blocked INTEGER DEFAULT 0")
+        except Exception:
+            # Column already exists
+            pass
         await db.commit()
     logger.info("Database initialized successfully.")
 
@@ -29,25 +36,25 @@ async def add_or_update_user(telegram_id: int, username: str) -> bool:
     Maintains the original join date (дата_входа) for deduplication.
     Sets the funnel stage (этап_воронки) back to 1 if starting fresh.
     """
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     async with aiosqlite.connect(DB_PATH) as db:
         # Check if user exists
         async with db.execute("SELECT telegram_id FROM users WHERE telegram_id = ?", (telegram_id,)) as cursor:
             row = await cursor.fetchone()
             
         if row is None:
-            # New user
+            # New user - ensure blocked state is 0 initially
             await db.execute("""
-                INSERT INTO users (telegram_id, username, дата_входа, статус_подписки, этап_воронки)
-                VALUES (?, ?, ?, 0, 1)
+                INSERT INTO users (telegram_id, username, дата_входа, статус_подписки, этап_воронки, is_blocked)
+                VALUES (?, ?, ?, 0, 1, 0)
             """, (telegram_id, username, now_str))
             logger.info(f"New user registered: {telegram_id} (@{username})")
             is_new = True
         else:
-            # Existing user - update username and reset funnel stage to 1 (re-entry)
+            # Existing user - update username, reset blocked state, and reset stage to 1 (re-entry)
             await db.execute("""
                 UPDATE users 
-                SET username = ?, этап_воронки = 1
+                SET username = ?, этап_воронки = 1, is_blocked = 0
                 WHERE telegram_id = ?
             """, (username, telegram_id))
             logger.info(f"Existing user re-entered: {telegram_id} (@{username})")
@@ -100,6 +107,18 @@ async def set_user_funnel_stage(telegram_id: int, stage: int):
         await db.commit()
     logger.info(f"User {telegram_id} funnel stage set to {stage}.")
 
+async def set_user_blocked(telegram_id: int, blocked: bool):
+    """Updates the user's blocked status (when they block/unblock the bot)."""
+    status_val = 1 if blocked else 0
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            UPDATE users
+            SET is_blocked = ?
+            WHERE telegram_id = ?
+        """, (status_val, telegram_id))
+        await db.commit()
+    logger.info(f"User {telegram_id} is_blocked set to {status_val}.")
+
 async def get_all_users() -> list[dict]:
     """Retrieves all users from the database."""
     async with aiosqlite.connect(DB_PATH) as db:
@@ -107,3 +126,37 @@ async def get_all_users() -> list[dict]:
         async with db.execute("SELECT * FROM users") as cursor:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
+
+async def get_funnel_stats() -> dict:
+    """Calculates conversion and funnel stage statistics for administrators."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT COUNT(*) FROM users") as c:
+            total = (await c.fetchone())[0] or 0
+            
+        async with db.execute("SELECT COUNT(*) FROM users WHERE этап_воронки = 1 AND is_blocked = 0") as c:
+            stage_1 = (await c.fetchone())[0] or 0
+            
+        async with db.execute("SELECT COUNT(*) FROM users WHERE этап_воронки = 2 AND is_blocked = 0") as c:
+            stage_2 = (await c.fetchone())[0] or 0
+            
+        async with db.execute("SELECT COUNT(*) FROM users WHERE этап_воронки = 3 AND is_blocked = 0") as c:
+            stage_3 = (await c.fetchone())[0] or 0
+            
+        async with db.execute("SELECT COUNT(*) FROM users WHERE этап_воронки = 4 AND is_blocked = 0") as c:
+            stage_4 = (await c.fetchone())[0] or 0
+            
+        async with db.execute("SELECT COUNT(*) FROM users WHERE is_blocked = 1") as c:
+            blocked = (await c.fetchone())[0] or 0
+            
+        conversion = (stage_4 / total) * 100 if total > 0 else 0.0
+        
+        return {
+            "total": total,
+            "stage_1": stage_1,
+            "stage_2": stage_2,
+            "stage_3": stage_3,
+            "stage_4": stage_4,
+            "blocked": blocked,
+            "conversion": conversion
+        }
+

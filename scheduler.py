@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram import Bot
+from aiogram.exceptions import TelegramForbiddenError
 import pytz
 
 import config
@@ -34,6 +35,12 @@ async def send_subscription_nudge(bot: Bot, user_id: int):
     Checks subscription status. If not subscribed, sends the nudge message.
     If subscribed, automatically transitions the user to Step 4 (bonus selection).
     """
+    # Check if user is blocked or doesn't exist
+    user = await database.get_user(user_id)
+    if not user or user.get("is_blocked"):
+        logger.info(f"Skipping nudge for user {user_id} (blocked or not found)")
+        return
+
     logger.info(f"Running scheduled subscription nudge check for user {user_id}")
     
     # 1. Double check current subscription via API
@@ -42,14 +49,14 @@ async def send_subscription_nudge(bot: Bot, user_id: int):
     # 2. Update status in Database
     await database.set_user_subscription(user_id, is_subscribed)
     
+    # Refresh user reference
     user = await database.get_user(user_id)
     if not user:
         return
 
     # If the user is subscribed but hasn't reached stage 3/4 yet, let's advance them!
     if is_subscribed:
-        if user["этап_воронки"] < 3:
-            await database.set_user_funnel_stage(user_id, 3)
+        if user["этап_воронки"] < 4:
             await transition_to_step_4(bot, user_id)
         return
 
@@ -67,14 +74,23 @@ async def send_subscription_nudge(bot: Bot, user_id: int):
                     reply_markup=kb,
                     parse_mode="Markdown"
                 )
+            except TelegramForbiddenError:
+                logger.warning(f"User {user_id} blocked the bot on sending nudge photo. Marking as blocked.")
+                await database.set_user_blocked(user_id, True)
+                return
             except Exception as photo_err:
                 logger.error(f"Failed to send nudge photo: {photo_err}, sending text only")
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=config.NUDGE_TEXT,
-                    reply_markup=kb,
-                    parse_mode="Markdown"
-                )
+                try:
+                    await bot.send_message(
+                        chat_id=user_id,
+                        text=config.NUDGE_TEXT,
+                        reply_markup=kb,
+                        parse_mode="Markdown"
+                    )
+                except TelegramForbiddenError:
+                    logger.warning(f"User {user_id} blocked the bot on nudge text fallback. Marking as blocked.")
+                    await database.set_user_blocked(user_id, True)
+                    return
         else:
             await bot.send_message(
                 chat_id=user_id,
@@ -83,6 +99,9 @@ async def send_subscription_nudge(bot: Bot, user_id: int):
                 parse_mode="Markdown"
             )
         logger.info(f"Nudge sent successfully to user {user_id}")
+    except TelegramForbiddenError:
+        logger.warning(f"User {user_id} blocked the bot. Marking as blocked.")
+        await database.set_user_blocked(user_id, True)
     except Exception as e:
         logger.error(f"Could not send nudge to user {user_id}: {e}")
 
@@ -92,8 +111,8 @@ async def send_warmup_message(bot: Bot, user_id: int, sequence_index: int):
     Only executes if the user is in stage 4 (active subscribed user receiving warm-ups).
     """
     user = await database.get_user(user_id)
-    if not user or user["этап_воронки"] != 4:
-        logger.info(f"Skipping warm-up {sequence_index} for user {user_id} (not in stage 4)")
+    if not user or user.get("is_blocked") or user["этап_воронки"] != 4:
+        logger.info(f"Skipping warm-up {sequence_index} for user {user_id} (blocked or not in stage 4)")
         return
         
     # Get the sequence data
@@ -125,14 +144,23 @@ async def send_warmup_message(bot: Bot, user_id: int, sequence_index: int):
                     reply_markup=kb,
                     parse_mode="Markdown"
                 )
+            except TelegramForbiddenError:
+                logger.warning(f"User {user_id} blocked the bot on warmup photo. Marking as blocked.")
+                await database.set_user_blocked(user_id, True)
+                return
             except Exception as photo_err:
                 logger.error(f"Failed to send warm-up photo: {photo_err}, sending text only")
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=text,
-                    reply_markup=kb,
-                    parse_mode="Markdown"
-                )
+                try:
+                    await bot.send_message(
+                        chat_id=user_id,
+                        text=text,
+                        reply_markup=kb,
+                        parse_mode="Markdown"
+                    )
+                except TelegramForbiddenError:
+                    logger.warning(f"User {user_id} blocked the bot on warmup text fallback. Marking as blocked.")
+                    await database.set_user_blocked(user_id, True)
+                    return
         else:
             await bot.send_message(
                 chat_id=user_id,
@@ -141,6 +169,9 @@ async def send_warmup_message(bot: Bot, user_id: int, sequence_index: int):
                 parse_mode="Markdown"
             )
         logger.info(f"Warmup message {sequence_index} sent to user {user_id}")
+    except TelegramForbiddenError:
+        logger.warning(f"User {user_id} blocked the bot. Marking as blocked.")
+        await database.set_user_blocked(user_id, True)
     except Exception as e:
         logger.error(f"Could not send warm-up {sequence_index} to user {user_id}: {e}")
 
@@ -222,19 +253,15 @@ def cancel_active_jobs_for_user(user_id: int):
 
 async def transition_to_step_4(bot: Bot, user_id: int):
     """Transition helper to step 4 (congratulations and bonus selection markup)."""
-    # 1. Update database to Stage 3 (Subscribed)
-    await database.set_user_funnel_stage(user_id, 3)
+    # 1. Update database to Stage 4 (Subscribed & Ready for warming)
+    await database.set_user_funnel_stage(user_id, 4)
     
     # 2. Cancel the outstanding nudge job since they successfully verified
     cancel_active_jobs_for_user(user_id)
     
     # 3. Present Step 4 visual & markup
     kb = keyboards.get_bonus_keyboard()
-    congrats_text = (
-        "🎉 **Поздравляю! Подписка успешно подтверждена!**\n\n"
-        "Вы получили полный доступ к воронке полезных материалов.\n\n"
-        "Теперь выберите один из гарантированных бонусов ниже, чтобы начать обучение 👇"
-    )
+    congrats_text = config.STEP_4_CONGRATS_TEXT
     
     try:
         if config.IMAGE_4:
@@ -246,14 +273,23 @@ async def transition_to_step_4(bot: Bot, user_id: int):
                     reply_markup=kb,
                     parse_mode="Markdown"
                 )
+            except TelegramForbiddenError:
+                logger.warning(f"User {user_id} blocked the bot on congrats photo. Marking as blocked.")
+                await database.set_user_blocked(user_id, True)
+                return
             except Exception as photo_err:
                 logger.error(f"Failed to send step 4 photo: {photo_err}, sending text only")
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=congrats_text,
-                    reply_markup=kb,
-                    parse_mode="Markdown"
-                )
+                try:
+                    await bot.send_message(
+                        chat_id=user_id,
+                        text=congrats_text,
+                        reply_markup=kb,
+                        parse_mode="Markdown"
+                    )
+                except TelegramForbiddenError:
+                    logger.warning(f"User {user_id} blocked the bot on congrats text fallback. Marking as blocked.")
+                    await database.set_user_blocked(user_id, True)
+                    return
         else:
             await bot.send_message(
                 chat_id=user_id,
@@ -262,6 +298,9 @@ async def transition_to_step_4(bot: Bot, user_id: int):
                 parse_mode="Markdown"
             )
         logger.info(f"Successfully transitioned user {user_id} to Step 4")
+    except TelegramForbiddenError:
+        logger.warning(f"User {user_id} blocked the bot. Marking as blocked.")
+        await database.set_user_blocked(user_id, True)
     except Exception as e:
         logger.error(f"Error executing step 4 delivery for user {user_id}: {e}")
 
@@ -282,14 +321,17 @@ async def restore_scheduled_jobs(bot: Bot):
     for u in users:
         user_id = u["telegram_id"]
         stage = u["этап_воронки"]
+        is_blocked = u.get("is_blocked", 0)
         
+        # Skip restoring jobs for blocked users
+        if is_blocked:
+            continue
+            
         # Parse their join date (дата_входа)
         try:
             join_dt = datetime.strptime(u["дата_входа"], "%Y-%m-%d %H:%M:%S")
-            # Localize database datetime (naive) to bot local timezone, then convert to UTC
-            # Since datetime.now() was used, we treat it as local time.
-            local_tz = datetime.now().astimezone().tzinfo
-            join_dt = join_dt.replace(tzinfo=local_tz).astimezone(pytz.utc)
+            # The date is stored directly as UTC naive. Convert to localized UTC object.
+            join_dt = join_dt.replace(tzinfo=pytz.utc)
         except Exception as date_err:
             logger.error(f"Error parsing join date for user {user_id}: {date_err}")
             continue
@@ -345,3 +387,4 @@ async def restore_scheduled_jobs(bot: Bot):
                     restored_count += 1
                     
     logger.info(f"Startup recovery completed. Restored {restored_count} active jobs.")
+

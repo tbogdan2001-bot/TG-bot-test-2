@@ -9,6 +9,7 @@ BOT_TOKEN = ""                  # Insert your Telegram Bot Token from @BotFather
 CHANNEL_ID = "-1002222222222"    # Target channel ID (e.g., -100xxxxxxxxx or @username)
 CHANNEL_LINK = "https://t.me/example_channel"  # Link for users to join the channel
 CHANNEL_NAME = "Crypto Inside 📈"  # Display name of the channel
+ADMIN_ID = 0                    # Telegram ID of the administrator for stats
 
 # 2. Marketing Persona / Niche
 PERSONA_NAME = "Александр"
@@ -52,6 +53,12 @@ NUDGE_TEXT = (
 )
 
 ALREADY_SUBSCRIBED_NUDGE = "✅ Вы уже подписаны! Забирайте свои бонусы ниже."
+
+STEP_4_CONGRATS_TEXT = (
+    "🎉 **Поздравляю! Подписка успешно подтверждена!**\n\n"
+    "Вы получили полный доступ к воронке полезных материалов.\n\n"
+    "Теперь выберите один из гарантированных бонусов ниже, чтобы начать 👇"
+)
 
 # 6. Delivered Bonus Contents (What users receive when selecting a bonus)
 BONUS_CONTENTS = {

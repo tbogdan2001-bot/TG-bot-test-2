@@ -4,7 +4,7 @@ import logging
 import sys
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery
 
 import config
@@ -102,6 +102,26 @@ async def cmd_start(message: Message):
             await message.answer(text=text, reply_markup=kb, parse_mode="Markdown")
     else:
         await message.answer(text=text, reply_markup=kb, parse_mode="Markdown")
+
+@dp.message(Command("admin"))
+async def cmd_admin(message: Message):
+    """Admin-only command to view real-time funnel statistics."""
+    # Check if sender is the owner from config
+    if message.from_user.id != config.ADMIN_ID:
+        return
+
+    stats = await database.get_funnel_stats()
+    text = (
+        "📊 *Статистика воронки*\n\n"
+        f"👥 Всего пользователей: {stats['total']}\n"
+        f"📩 Этап 1 (старт): {stats['stage_1']}\n"
+        f"📢 Этап 2 (подписка): {stats['stage_2']}\n"
+        f"✅ Этап 3 (подтвердили): {stats['stage_3']}\n"
+        f"🎁 Этап 4 (бонус): {stats['stage_4']}\n"
+        f"🚫 Заблокировали бота: {stats['blocked']}\n\n"
+        f"📈 Конверсия (старт→бонус): {stats['conversion']:.1f}%"
+    )
+    await message.answer(text, parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("choose_offer:"))
 async def handle_offer_selection(callback: CallbackQuery):
@@ -260,3 +280,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot stopped by user.")
+
