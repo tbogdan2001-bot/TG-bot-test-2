@@ -3,13 +3,19 @@
 # FULLY CONFIGURABLE TEMPLATE FOR TELEGRAM WARM-UP BOT
 # All text and funnel parameters reside here.
 # ==========================================
+import os  # CHANGED: Added os import
+from dotenv import load_dotenv  # CHANGED: Added dotenv import
+
+# CHANGED: Load environment variables from .env file
+load_dotenv()
 
 # 1. Telegram Connection Configuration
-BOT_TOKEN = ""                  # Insert your Telegram Bot Token from @BotFather
-CHANNEL_ID = "-1002222222222"    # Target channel ID (e.g., -100xxxxxxxxx or @username)
-CHANNEL_LINK = "https://t.me/example_channel"  # Link for users to join the channel
-CHANNEL_NAME = "Crypto Inside 📈"  # Display name of the channel
-ADMIN_ID = 0                    # Telegram ID of the administrator for stats
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")  # CHANGED: Read from environment variable
+CHANNEL_ID = os.getenv("CHANNEL_ID", "")  # CHANGED: Read from environment variable
+CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/example_channel")  # CHANGED: Read from env
+CHANNEL_NAME = os.getenv("CHANNEL_NAME", "Crypto Inside 📈")  # CHANGED: Read from env
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))  # CHANGED: Read from environment variable
+
 
 # 2. Marketing Persona / Niche
 PERSONA_NAME = "Александр"

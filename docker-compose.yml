@@ -1,0 +1,15 @@
+# docker-compose.yml
+# CHANGED: Standard docker-compose orchestration file (TASK 9)
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: tg_funnel_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Persistent SQLite database and log storage on the host
+      - ./funnel_bot.db:/app/funnel_bot.db
+      - ./bot.log:/app/bot.log

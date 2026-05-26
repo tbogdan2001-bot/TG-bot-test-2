@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import sys
+from datetime import datetime  # CHANGED: Added datetime import for rate limiting (TASK 8)
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
@@ -31,6 +32,9 @@ if not config.BOT_TOKEN:
 bot = Bot(token=config.BOT_TOKEN)
 dp = Dispatcher()
 
+# CHANGED: In-memory rate limiting dictionary for /start command (TASK 8)
+last_start_times = {}
+
 # -------------------------------------------------------------
 # LIFECYCLE HANDLERS
 # -------------------------------------------------------------
@@ -57,6 +61,15 @@ async def on_shutdown():
     if scheduler.scheduler.running:
         scheduler.scheduler.shutdown(wait=True)
         logger.info("APScheduler shut down.")
+        
+    # CHANGED: Close persistent database connection on shutdown (TASK 3)
+    await database.close_db()
+
+# CHANGED: Global error handler decorator (TASK 7)
+@dp.errors()
+async def global_error_handler(event, exception):
+    logger.error(f"Unhandled exception: {exception}", exc_info=True)
+    return True
 
 # -------------------------------------------------------------
 # BOT MESSAGE AND CALLBACK HANDLERS
@@ -70,6 +83,16 @@ async def cmd_start(message: Message):
     """
     user_id = message.from_user.id
     username = message.from_user.username or "unknown"
+    
+    # CHANGED: Implement standard datetime rate limiting of 10 seconds (TASK 8)
+    now = datetime.now()
+    if user_id in last_start_times:
+        time_elapsed = (now - last_start_times[user_id]).total_seconds()
+        if time_elapsed < 10:
+            logger.info(f"Rate limit triggered for user {user_id}. Ignoring /start request.")
+            return
+            
+    last_start_times[user_id] = now
     
     logger.info(f"User {user_id} (@{username}) triggered /start")
     
@@ -280,4 +303,5 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot stopped by user.")
+
 

@@ -15,6 +15,48 @@ logger = logging.getLogger(__name__)
 # Initialize the scheduler with UTC timezone
 scheduler = AsyncIOScheduler(timezone=pytz.utc)
 
+# CHANGED: Added utility function safe_send to deduplicate message sending logic (TASK 4)
+async def safe_send(bot: Bot, user_id: int, text: str, photo: str = None, kb = None) -> bool:
+    """
+    Safely sends a text or photo message to a user.
+    If photo sending fails, automatically falls back to sending text.
+    If the user has blocked the bot, marks the user as blocked in the database and returns False.
+    Returns True if successfully sent.
+    """
+    try:
+        if photo:
+            try:
+                await bot.send_photo(
+                    chat_id=user_id,
+                    photo=photo,
+                    caption=text,
+                    reply_markup=kb,
+                    parse_mode="Markdown"
+                )
+                return True
+            except TelegramForbiddenError:
+                logger.warning(f"User {user_id} blocked the bot on sending photo. Marking as blocked.")
+                await database.set_user_blocked(user_id, True)
+                return False
+            except Exception as photo_err:
+                logger.error(f"Failed to send photo to {user_id}: {photo_err}, falling back to text only.")
+                # Fallback to text message
+        
+        await bot.send_message(
+            chat_id=user_id,
+            text=text,
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+        return True
+    except TelegramForbiddenError:
+        logger.warning(f"User {user_id} blocked the bot on sending message. Marking as blocked.")
+        await database.set_user_blocked(user_id, True)
+        return False
+    except Exception as e:
+        logger.error(f"Failed to send message to user {user_id}: {e}", exc_info=True)
+        return False
+
 # -------------------------------------------------------------
 # BACKGROUND TASK ACTIONS
 # -------------------------------------------------------------
@@ -54,56 +96,17 @@ async def send_subscription_nudge(bot: Bot, user_id: int):
     if not user:
         return
 
-    # If the user is subscribed but hasn't reached stage 3/4 yet, let's advance them!
+    # If the user is subscribed but hasn't reached stage 4 yet, let's advance them!
     if is_subscribed:
         if user["этап_воронки"] < 4:
             await transition_to_step_4(bot, user_id)
         return
 
     # If not subscribed, send nudge (Step 2b)
-    try:
-        kb = keyboards.get_nudge_keyboard()
-        
-        # We can send Nudge with IMAGE_2 or just text. Let's send photo for aesthetic premium feel
-        if config.IMAGE_2:
-            try:
-                await bot.send_photo(
-                    chat_id=user_id,
-                    photo=config.IMAGE_2,
-                    caption=config.NUDGE_TEXT,
-                    reply_markup=kb,
-                    parse_mode="Markdown"
-                )
-            except TelegramForbiddenError:
-                logger.warning(f"User {user_id} blocked the bot on sending nudge photo. Marking as blocked.")
-                await database.set_user_blocked(user_id, True)
-                return
-            except Exception as photo_err:
-                logger.error(f"Failed to send nudge photo: {photo_err}, sending text only")
-                try:
-                    await bot.send_message(
-                        chat_id=user_id,
-                        text=config.NUDGE_TEXT,
-                        reply_markup=kb,
-                        parse_mode="Markdown"
-                    )
-                except TelegramForbiddenError:
-                    logger.warning(f"User {user_id} blocked the bot on nudge text fallback. Marking as blocked.")
-                    await database.set_user_blocked(user_id, True)
-                    return
-        else:
-            await bot.send_message(
-                chat_id=user_id,
-                text=config.NUDGE_TEXT,
-                reply_markup=kb,
-                parse_mode="Markdown"
-            )
-        logger.info(f"Nudge sent successfully to user {user_id}")
-    except TelegramForbiddenError:
-        logger.warning(f"User {user_id} blocked the bot. Marking as blocked.")
-        await database.set_user_blocked(user_id, True)
-    except Exception as e:
-        logger.error(f"Could not send nudge to user {user_id}: {e}")
+    # CHANGED: Using safe_send() utility function to handle messaging and block states (TASK 4)
+    kb = keyboards.get_nudge_keyboard()
+    await safe_send(bot, user_id, config.NUDGE_TEXT, photo=config.IMAGE_2, kb=kb)
+    logger.info(f"Nudge task executed for user {user_id}")
 
 async def send_warmup_message(bot: Bot, user_id: int, sequence_index: int):
     """
@@ -134,46 +137,9 @@ async def send_warmup_message(bot: Bot, user_id: int, sequence_index: int):
         
     image_url = seq.get("image")
     
-    try:
-        if image_url:
-            try:
-                await bot.send_photo(
-                    chat_id=user_id,
-                    photo=image_url,
-                    caption=text,
-                    reply_markup=kb,
-                    parse_mode="Markdown"
-                )
-            except TelegramForbiddenError:
-                logger.warning(f"User {user_id} blocked the bot on warmup photo. Marking as blocked.")
-                await database.set_user_blocked(user_id, True)
-                return
-            except Exception as photo_err:
-                logger.error(f"Failed to send warm-up photo: {photo_err}, sending text only")
-                try:
-                    await bot.send_message(
-                        chat_id=user_id,
-                        text=text,
-                        reply_markup=kb,
-                        parse_mode="Markdown"
-                    )
-                except TelegramForbiddenError:
-                    logger.warning(f"User {user_id} blocked the bot on warmup text fallback. Marking as blocked.")
-                    await database.set_user_blocked(user_id, True)
-                    return
-        else:
-            await bot.send_message(
-                chat_id=user_id,
-                text=text,
-                reply_markup=kb,
-                parse_mode="Markdown"
-            )
-        logger.info(f"Warmup message {sequence_index} sent to user {user_id}")
-    except TelegramForbiddenError:
-        logger.warning(f"User {user_id} blocked the bot. Marking as blocked.")
-        await database.set_user_blocked(user_id, True)
-    except Exception as e:
-        logger.error(f"Could not send warm-up {sequence_index} to user {user_id}: {e}")
+    # CHANGED: Using safe_send() utility function to send warm-up sequences safely (TASK 4)
+    await safe_send(bot, user_id, text, photo=image_url, kb=kb)
+    logger.info(f"Warmup task executed for user {user_id}, index {sequence_index}")
 
 # -------------------------------------------------------------
 # PUBLIC SCHEDULING MANAGEMENT
@@ -263,46 +229,9 @@ async def transition_to_step_4(bot: Bot, user_id: int):
     kb = keyboards.get_bonus_keyboard()
     congrats_text = config.STEP_4_CONGRATS_TEXT
     
-    try:
-        if config.IMAGE_4:
-            try:
-                await bot.send_photo(
-                    chat_id=user_id,
-                    photo=config.IMAGE_4,
-                    caption=congrats_text,
-                    reply_markup=kb,
-                    parse_mode="Markdown"
-                )
-            except TelegramForbiddenError:
-                logger.warning(f"User {user_id} blocked the bot on congrats photo. Marking as blocked.")
-                await database.set_user_blocked(user_id, True)
-                return
-            except Exception as photo_err:
-                logger.error(f"Failed to send step 4 photo: {photo_err}, sending text only")
-                try:
-                    await bot.send_message(
-                        chat_id=user_id,
-                        text=congrats_text,
-                        reply_markup=kb,
-                        parse_mode="Markdown"
-                    )
-                except TelegramForbiddenError:
-                    logger.warning(f"User {user_id} blocked the bot on congrats text fallback. Marking as blocked.")
-                    await database.set_user_blocked(user_id, True)
-                    return
-        else:
-            await bot.send_message(
-                chat_id=user_id,
-                text=congrats_text,
-                reply_markup=kb,
-                parse_mode="Markdown"
-            )
-        logger.info(f"Successfully transitioned user {user_id} to Step 4")
-    except TelegramForbiddenError:
-        logger.warning(f"User {user_id} blocked the bot. Marking as blocked.")
-        await database.set_user_blocked(user_id, True)
-    except Exception as e:
-        logger.error(f"Error executing step 4 delivery for user {user_id}: {e}")
+    # CHANGED: Using safe_send() utility function to handle congrats selection message (TASK 4)
+    await safe_send(bot, user_id, congrats_text, photo=config.IMAGE_4, kb=kb)
+    logger.info(f"Successfully transitioned user {user_id} to Step 4")
 
 # -------------------------------------------------------------
 # STARTUP RESTORATION / RECOVERY LOGIC
@@ -387,4 +316,5 @@ async def restore_scheduled_jobs(bot: Bot):
                     restored_count += 1
                     
     logger.info(f"Startup recovery completed. Restored {restored_count} active jobs.")
+
 
