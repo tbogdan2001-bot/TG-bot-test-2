@@ -1,4 +1,8 @@
 # keyboards.py
+# CHANGED: Added comment block listing updates (FEATURE 1 & 6)
+# - Adjusted get_subscribe_keyboard, get_nudge_keyboard, get_retry_subscription_keyboard to take channel_link
+# - Adjusted get_bonus_keyboard to take persona config dynamically
+
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 import config
@@ -11,34 +15,49 @@ def get_offer_keyboard() -> InlineKeyboardMarkup:
     builder.adjust(2)  # Two buttons side-by-side
     return builder.as_markup()
 
-def get_subscribe_keyboard() -> InlineKeyboardMarkup:
-    """Returns the keyboard for Step 2 (Channel subscription invitation)."""
+def get_subscribe_keyboard(channel_link: str = None) -> InlineKeyboardMarkup:
+    """
+    Returns the keyboard for Step 2 (Channel subscription invitation).
+    CHANGED: Accepts channel_link parameter to support multiple channels (FEATURE 1)
+    """
+    link = channel_link if channel_link else config.CHANNEL_LINK
     builder = InlineKeyboardBuilder()
-    builder.button(text="📢 Подписаться", url=config.CHANNEL_LINK)
+    builder.button(text="📢 Подписаться", url=link)
     builder.button(text="✅ Я подписался", callback_data="check_subscription")
     builder.adjust(1)  # Stacking buttons vertically for visual prominence
     return builder.as_markup()
 
-def get_nudge_keyboard() -> InlineKeyboardMarkup:
-    """Returns the keyboard for Step 2b (Subscription nudge/reminder)."""
+def get_nudge_keyboard(channel_link: str = None) -> InlineKeyboardMarkup:
+    """
+    Returns the keyboard for Step 2b (Subscription nudge/reminder).
+    CHANGED: Accepts channel_link parameter to support multiple channels (FEATURE 1)
+    """
+    link = channel_link if channel_link else config.CHANNEL_LINK
     builder = InlineKeyboardBuilder()
-    builder.button(text="📢 Получить бонус", url=config.CHANNEL_LINK)
+    builder.button(text="📢 Получить бонус", url=link)
     builder.button(text="✅ Я подписался", callback_data="check_subscription")
     builder.adjust(1)
     return builder.as_markup()
 
-def get_retry_subscription_keyboard() -> InlineKeyboardMarkup:
-    """Returns the keyboard shown when subscription verification fails."""
+def get_retry_subscription_keyboard(channel_link: str = None) -> InlineKeyboardMarkup:
+    """
+    Returns the keyboard shown when subscription verification fails.
+    CHANGED: Accepts channel_link parameter to support multiple channels (FEATURE 1)
+    """
+    link = channel_link if channel_link else config.CHANNEL_LINK
     builder = InlineKeyboardBuilder()
-    builder.button(text="📢 Подписаться", url=config.CHANNEL_LINK)
+    builder.button(text="📢 Подписаться", url=link)
     builder.button(text="🔄 Попробовать снова", callback_data="check_subscription")
     builder.adjust(1)
     return builder.as_markup()
 
-def get_bonus_keyboard() -> InlineKeyboardMarkup:
-    """Dynamically builds and returns the keyboard for Step 4 based on config.BONUS_OPTIONS."""
+def get_bonus_keyboard(persona: dict) -> InlineKeyboardMarkup:
+    """
+    Dynamically builds and returns the keyboard for Step 4 based on persona config.
+    CHANGED: Accepts persona config parameter dynamically (FEATURE 6)
+    """
     builder = InlineKeyboardBuilder()
-    for option in config.BONUS_OPTIONS:
+    for option in persona["bonus_options"]:
         builder.button(
             text=option["label"], 
             callback_data=f"select_bonus:{option['value']}"
@@ -60,3 +79,4 @@ def get_custom_keyboard(buttons_data: list[list[dict]]) -> InlineKeyboardMarkup:
                 builder.button(text=btn["text"], callback_data=btn["callback_data"])
     builder.adjust(len(row) if buttons_data else 1)
     return builder.as_markup()
+
