@@ -1,11 +1,12 @@
 # main.py
-# CHANGED: Added comment block listing updates (FEATURE 1, 2, 4, 5, 6)
-# - CommandStart takes CommandObject parameter to parse deep-link start params
-# - Implemented multi-channel start tracking and UTM campaign parsing
-# - Personalized start greetings and photos mapped to dynamic assigned personas
-# - Mapped Step 2 and Step 3 subscription verify links dynamically to user source channel
-# - Added CRM notify_closer_hub trigger upon Stage 4 transition
-# - Added get_full_stats() /admin_full stats command restricted to config.ADMIN_ID
+# CHANGED: Upgraded Telegram Sales Funnel Bot into a complete 3-step Quiz Funnel:
+# - CommandStart presents Q1: Experience Level choice using inline keyboards
+# - Added handle_q1_selection callback saving Q1 and presenting Q2
+# - Added handle_q2_selection callback saving Q2, swapping to image_3 (quiz mid-point) and presenting Q3
+# - Added handle_q3_selection callback saving Q3, resolving personalized bonus, setting stage to 2,
+#   swapping to image_2 (subscribe prompt) and scheduling nudge
+# - Upgraded check_subscription handler to call upgraded scheduler transition
+# - Upgraded /admin and /admin_full dashboards to display quiz Q1/Q2/Q3 distributions and top paths
 
 import asyncio
 import logging
@@ -14,7 +15,7 @@ from datetime import datetime
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command, CommandObject
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, InputMediaPhoto
 
 import config
 import database
@@ -40,7 +41,7 @@ if not config.BOT_TOKEN:
 bot = Bot(token=config.BOT_TOKEN)
 dp = Dispatcher()
 
-# In-memory rate limiting dictionary for /start command (TASK 8)
+# In-memory rate limiting dictionary for /start command
 last_start_times = {}
 
 # -------------------------------------------------------------
@@ -61,7 +62,7 @@ async def on_startup():
     # 3. Restore all active scheduled jobs (Nudges & Warmups)
     await scheduler.restore_scheduled_jobs(bot)
     
-    # 4. NEW: Start Telethon userbots and schedule auto-posting / manager followups
+    # 4. Start Telethon userbots and schedule auto-posting / manager followups
     await scheduler.start_scheduler_tasks(bot)
 
 async def on_shutdown():
@@ -73,10 +74,10 @@ async def on_shutdown():
         scheduler.scheduler.shutdown(wait=True)
         logger.info("APScheduler shut down.")
         
-    # Close persistent database connection on shutdown (TASK 3)
+    # Close persistent database connection on shutdown
     await database.close_db()
 
-# Global error handler decorator (TASK 7)
+# Global error handler decorator
 @dp.errors()
 async def global_error_handler(event, exception):
     logger.error(f"Unhandled exception: {exception}", exc_info=True)
@@ -90,12 +91,12 @@ async def global_error_handler(event, exception):
 async def cmd_start(message: Message, command: CommandObject = None):
     """
     Step 1: Welcome message /start.
-    Saves the user, parses traffic referral params, resets funnel state, and requests level.
+    Resets funnel state, parses traffic referral params, and initiates Q1 of the quiz.
     """
     user_id = message.from_user.id
     username = message.from_user.username or "unknown"
     
-    # Implement standard datetime rate limiting of 10 seconds (TASK 8)
+    # Implement standard datetime rate limiting of 10 seconds
     now = datetime.now()
     if user_id in last_start_times:
         time_elapsed = (now - last_start_times[user_id]).total_seconds()
@@ -105,7 +106,7 @@ async def cmd_start(message: Message, command: CommandObject = None):
             
     last_start_times[user_id] = now
     
-    # CHANGED: Parse referral start parameters to extract source channel and UTM source/campaign (FEATURE 1 & 2)
+    # Parse referral start parameters to extract source channel and UTM source/campaign
     start_param = command.args if command and command.args else ""
     
     source_channel = ""
@@ -114,14 +115,12 @@ async def cmd_start(message: Message, command: CommandObject = None):
     traffic_source = start_param
     
     if start_param:
-        # Format e.g., ref_crypto_channel_utm_facebook_retarget
         parts = start_param.split("_utm_")
         ref_part = parts[0]
         
         if ref_part.startswith("ref_"):
             source_channel = ref_part[4:]
         else:
-            # Fallback checking if it direct matches a channel id
             matched_ch = False
             for ch in config.CHANNELS:
                 if ref_part == ch["id"]:
@@ -138,7 +137,6 @@ async def cmd_start(message: Message, command: CommandObject = None):
             if len(utm_subparts) > 1:
                 utm_campaign = utm_subparts[1]
         else:
-            # Check if start param is a pure UTM sequence (e.g. utm_facebook_ads)
             if start_param.startswith("utm_"):
                 utm_part = start_param[4:]
                 utm_subparts = utm_part.split("_", 1)
@@ -146,7 +144,6 @@ async def cmd_start(message: Message, command: CommandObject = None):
                 if len(utm_subparts) > 1:
                     utm_campaign = utm_subparts[1]
             elif not source_channel:
-                # Basic string splitting fallback
                 subparts = start_param.split("_", 1)
                 utm_source = subparts[0]
                 if len(subparts) > 1:
@@ -160,7 +157,7 @@ async def cmd_start(message: Message, command: CommandObject = None):
     # Cancel any active jobs if this is a re-entry
     scheduler.cancel_active_jobs_for_user(user_id)
     
-    # Add/update user in DB including traffic tracking variables (FEATURE 1 & 2)
+    # Add/update user in DB including traffic tracking variables (will reset new quiz columns to empty/NULL)
     await database.add_or_update_user(
         telegram_id=user_id,
         username=username,
@@ -170,20 +167,20 @@ async def cmd_start(message: Message, command: CommandObject = None):
         traffic_source=traffic_source
     )
     
-    # CHANGED: Retrieve dynamic assigned marketing persona for personalized assets (FEATURE 6)
+    # Retrieve dynamic assigned marketing persona for personalized assets
     user = await database.get_user(user_id)
     persona = config.get_persona_for_user(user)
     
-    # Build personalized welcome text using expert details
+    # Build welcome text using expert details & present Q1
     text = config.WELCOME_TEXT.format(
         persona_name=persona["name"],
         persona_description=persona["description"],
         niche=persona["niche"]
     )
     
-    kb = keyboards.get_offer_keyboard()
+    kb = keyboards.get_q1_keyboard()
     
-    # CHANGED: Retrieve step 1 photo directly from assigned persona assets (FEATURE 6)
+    # Retrieve step 1 photo directly from assigned persona assets
     welcome_photo = persona["images"].get("image_1", config.IMAGE_1)
     
     # Send welcome photo (or text if photo fails or is not provided)
@@ -204,7 +201,6 @@ async def cmd_start(message: Message, command: CommandObject = None):
 @dp.message(Command("admin"))
 async def cmd_admin(message: Message):
     """Admin-only command to view real-time funnel statistics."""
-    # Check if sender is the owner from config
     if message.from_user.id != config.ADMIN_ID:
         return
 
@@ -212,19 +208,19 @@ async def cmd_admin(message: Message):
     text = (
         "📊 *Статистика воронки*\n\n"
         f"👥 Всего пользователей: {stats['total']}\n"
-        f"📩 Этап 1 (старт): {stats['stage_1']}\n"
+        f"📩 Этап 1 (приветствие/квиз): {stats['stage_1']}\n"
         f"📢 Этап 2 (подписка): {stats['stage_2']}\n"
         f"✅ Этап 3 (подтвердили): {stats['stage_3']}\n"
-        f"🎁 Этап 4 (бонус): {stats['stage_4']}\n"
+        f"🎁 Этап 4 (получили бонус): {stats['stage_4']}\n"
+        f"💎 Этап 5 (закрытый клуб): {stats['stage_5']}\n"
         f"🚫 Заблокировали бота: {stats['blocked']}\n\n"
         f"📈 Конверсия (старт→бонус): {stats['conversion']:.1f}%"
     )
     await message.answer(text, parse_mode="Markdown")
 
-# CHANGED: Added detailed admin_full dashboard handler (FEATURE 1, 2, 4, 5)
 @dp.message(Command("admin_full"))
 async def cmd_admin_full(message: Message):
-    """Admin-only command to view detailed multi-dimensional funnel statistics, channels, and CRM leads."""
+    """Admin-only command to view detailed multi-dimensional funnel stats, quiz answers and CRM leads."""
     if message.from_user.id != config.ADMIN_ID:
         return
 
@@ -232,12 +228,25 @@ async def cmd_admin_full(message: Message):
     
     # Stages format
     stages_text = (
-        f"  🔹 Шаг 1 (Приветствие): {stats['stages'][1]}\n"
-        f"  🔹 Шаг 2 (Подписка): {stats['stages'][2]}\n"
-        f"  🔹 Шаг 3 (Подтвердили): {stats['stages'][3]}\n"
-        f"  🔹 Шаг 4 (Получили бонус): {stats['stages'][4]}"
+        f"  🔹 Шаг 1 (Приветствие/Квиз): {stats['stages'][1]}\n"
+        f"  🔹 Шаг 2 (Ожидание подписки): {stats['stages'][2]}\n"
+        f"  🔹 Шаг 3 (Подтвердили, ожидают): {stats['stages'][3]}\n"
+        f"  🔹 Шаг 4 (Получили бонус): {stats['stages'][4]}\n"
+        f"  🔹 Шаг 5 (Вступили в закрытый клуб): {stats['stages'][5]}"
     )
     
+    # Quiz breakdowns format
+    q1_text = "\n".join([f"  🔸 {ans}: {count}" for ans, count in stats["q1_breakdown"].items()]) or "  (Нет данных)"
+    q2_text = "\n".join([f"  🔸 {ans}: {count}" for ans, count in stats["q2_breakdown"].items()]) or "  (Нет данных)"
+    q3_text = "\n".join([f"  🔸 {ans}: {count}" for ans, count in stats["q3_breakdown"].items()]) or "  (Нет данных)"
+    
+    # Popular paths format
+    paths_text = ""
+    for path in stats["popular_paths"]:
+        paths_text += f"  🔹 {path['path']} — {path['count']} раз(а)\n"
+    if not paths_text:
+        paths_text = "  (Нет данных)"
+        
     # Channels format
     channels_text = ""
     for ch, count in stats["channels"].items():
@@ -253,10 +262,19 @@ async def cmd_admin_full(message: Message):
         utm_text = "  (Нет данных)"
         
     text = (
-        "📊 **ПОЛНАЯ СТАТИСТИКА ВОРОНКИ (Closer & Traffic Hub)**\n\n"
+        "📊 **ПОЛНАЯ СТАТИСТИКА ВОРОНКИ (Closer & Quiz Hub)**\n\n"
         f"👥 **Всего пользователей:** {stats['total']}\n\n"
         "🚦 **По этапам воронки (активные):**\n"
         f"{stages_text}\n\n"
+        "❓ **Распределение ответов квиза:**\n"
+        "👉 *Q1 (Уровень опыта):*\n"
+        f"{q1_text}\n"
+        "👉 *Q2 (Главная цель):*\n"
+        f"{q2_text}\n"
+        "👉 *Q3 (Капитал):*\n"
+        f"{q3_text}\n\n"
+        "🏆 **Топ популярных путей квиза:**\n"
+        f"{paths_text}\n"
         "📢 **По каналам трафика:**\n"
         f"{channels_text}\n"
         "🎯 **По источникам (Топ-10 UTM):**\n"
@@ -272,29 +290,90 @@ async def cmd_admin_full(message: Message):
     
     await message.answer(text, parse_mode="Markdown")
 
-@dp.callback_query(F.data.startswith("choose_offer:"))
-async def handle_offer_selection(callback: CallbackQuery):
-    """
-    Step 2: Handles Novice / Experienced selection.
-    Saves decision to DB, prompts channel subscription, and schedules the nudge task.
-    """
+# CHANGED: Added CallbackQuery handlers for 3-step Quiz Decision Tree
+@dp.callback_query(F.data.startswith("quiz_q1:"))
+async def handle_q1_selection(callback: CallbackQuery):
+    """Handles Q1 (Experience level) callback. Saves choice and advances to Q2."""
     user_id = callback.from_user.id
-    offer_selected = callback.data.split(":")[1]
+    answer = callback.data.split(":")[1]
+    logger.info(f"User {user_id} answered Q1: {answer}")
     
-    logger.info(f"User {user_id} selected offer level: {offer_selected}")
+    await database.set_user_quiz_q1(user_id, answer)
+    await callback.answer()
     
-    # Save selected offer in database and advance to Stage 2
-    await database.set_user_offer(user_id, offer_selected)
+    q2_text = "**Вопрос 2: Какова ваша главная цель?**"
+    try:
+        # Edit caption since the start post contains a photo
+        await callback.message.edit_caption(
+            caption=q2_text,
+            reply_markup=keyboards.get_q2_keyboard(),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Failed to edit Q1 caption: {e}")
+        await callback.message.answer(text=q2_text, reply_markup=keyboards.get_q2_keyboard(), parse_mode="Markdown")
+
+@dp.callback_query(F.data.startswith("quiz_q2:"))
+async def handle_q2_selection(callback: CallbackQuery):
+    """Handles Q2 (Main Goal) callback. Saves choice, updates image to image_3 (mid-point), and advances to Q3."""
+    user_id = callback.from_user.id
+    answer = callback.data.split(":")[1]
+    logger.info(f"User {user_id} answered Q2: {answer}")
     
-    # Schedule the 30-minute nudge (FOLLOW_UP_DELAYS[0])
+    await database.set_user_quiz_q2(user_id, answer)
+    await callback.answer()
+    
+    user = await database.get_user(user_id)
+    persona = config.get_persona_for_user(user)
+    
+    # Swaps photo to image_3 (quiz mid-point visual)
+    image_3 = persona["images"].get("image_3")
+    q3_text = "**Вопрос 3: Какой ваш стартовый капитал?**"
+    
+    try:
+        await callback.message.edit_media(
+            media=InputMediaPhoto(
+                media=image_3,
+                caption=q3_text,
+                parse_mode="Markdown"
+            ),
+            reply_markup=keyboards.get_q3_keyboard()
+        )
+    except Exception as e:
+        logger.error(f"Failed to edit Q2 media: {e}")
+        await callback.message.answer_photo(
+            photo=image_3,
+            caption=q3_text,
+            reply_markup=keyboards.get_q3_keyboard(),
+            parse_mode="Markdown"
+        )
+
+@dp.callback_query(F.data.startswith("quiz_q3:"))
+async def handle_q3_selection(callback: CallbackQuery):
+    """Handles Q3 (Starting Capital) callback. Saves choice, resolves personalized bonus, and displays Step 2 Sub prompt."""
+    user_id = callback.from_user.id
+    answer = callback.data.split(":")[1]
+    logger.info(f"User {user_id} answered Q3: {answer}")
+    
+    user_data = await database.get_user(user_id)
+    persona = config.get_persona_for_user(user_data)
+    
+    q1 = user_data.get("quiz_q1", "beginner")
+    q2 = user_data.get("quiz_q2", "passive_income")
+    q3 = answer
+    
+    # Resolve the personalized bonus variant based on Q1-Q3 combinations
+    bonus_variant = config.get_personalized_bonus(persona["id"], q1, q2, q3)
+    await database.set_user_quiz_q3(user_id, q3, bonus_variant)
+    await callback.answer()
+    
+    # Schedule the subscription check nudge
     scheduler.schedule_subscription_nudge(bot, user_id)
     
-    # CHANGED: Retrieve source channel credentials and custom invite links dynamically (FEATURE 1)
-    user = await database.get_user(user_id)
+    # Retrieve source channel credentials
     channel_link = config.CHANNEL_LINK
     channel_name = config.CHANNEL_NAME
-    
-    source_channel_id = user.get("source_channel")
+    source_channel_id = user_data.get("source_channel")
     if source_channel_id:
         for ch in config.CHANNELS:
             if ch["id"] == source_channel_id:
@@ -307,40 +386,33 @@ async def handle_offer_selection(callback: CallbackQuery):
     )
     kb = keyboards.get_subscribe_keyboard(channel_link)
     
-    # CHANGED: Retrieve expert image 2 asset directly from assigned marketing persona config (FEATURE 6)
-    persona = config.get_persona_for_user(user)
-    subscribe_photo = persona["images"].get("image_2", config.IMAGE_2)
+    # Retrieve image_2 (subscribe prompt photo)
+    image_2 = persona["images"].get("image_2", config.IMAGE_2)
     
-    # Send Step 2 message with image
     try:
-        if subscribe_photo:
-            try:
-                # Answer query first to prevent loading state on buttons
-                await callback.answer()
-                await bot.send_photo(
-                    chat_id=user_id,
-                    photo=subscribe_photo,
-                    caption=text,
-                    reply_markup=kb,
-                    parse_mode="Markdown"
-                )
-                # Delete the welcome message to keep chat tidy
-                await callback.message.delete()
-            except Exception as e:
-                logger.error(f"Failed to send image 2: {e}, sending text only")
-                await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="Markdown")
-        else:
-            await callback.answer()
-            await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="Markdown")
+        await callback.message.edit_media(
+            media=InputMediaPhoto(
+                media=image_2,
+                caption=text,
+                parse_mode="Markdown"
+            ),
+            reply_markup=kb
+        )
     except Exception as e:
-        logger.error(f"Error in handle_offer_selection callback: {e}")
+        logger.error(f"Failed to transition to Q3 subscribe prompt: {e}")
+        await callback.message.answer_photo(
+            photo=image_2,
+            caption=text,
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
 
 @dp.callback_query(F.data == "check_subscription")
 async def handle_subscription_check(callback: CallbackQuery):
     """
     Step 3: Triggered when user clicks "Я подписался".
     Verifies subscription using get_chat_member.
-    If subscribed: transitions to Step 4.
+    If subscribed: transitions to Step 4 (delivering bonus + dark club visual).
     If not: displays a retry warning.
     """
     user_id = callback.from_user.id
@@ -351,7 +423,6 @@ async def handle_subscription_check(callback: CallbackQuery):
         await callback.answer("⚠️ Пользователь не найден")
         return
         
-    # CHANGED: Dynamically check subscription against source channel verification ID (FEATURE 1)
     target_channel_id = config.get_channel_id_for_user(user)
     is_subscribed = await scheduler.check_member_status(bot, target_channel_id, user_id)
     
@@ -366,13 +437,13 @@ async def handle_subscription_check(callback: CallbackQuery):
         except Exception as delete_err:
             logger.debug(f"Could not delete message: {delete_err}")
             
+        # Transitions user to Step 4 (Auto-delivers personalized bonus) and immediately to Step 5 (Dark CTA Card)
         await scheduler.transition_to_step_4(bot, user_id)
     else:
         # Not subscribed
         await callback.answer("❌ Подписка не найдена!", show_alert=True)
         retry_text = "⚠️ **Подписка не найдена.**\n\nПожалуйста, подпишитесь на наш канал по кнопке ниже и попробуйте снова 👇"
         
-        # CHANGED: Dynamically fetch custom referral join links (FEATURE 1)
         channel_link = config.CHANNEL_LINK
         source_channel_id = user.get("source_channel")
         if source_channel_id:
@@ -384,70 +455,24 @@ async def handle_subscription_check(callback: CallbackQuery):
         kb = keyboards.get_retry_subscription_keyboard(channel_link)
         
         try:
-            # Edit existing message or send a fresh one if it's a photo caption
             if callback.message.photo:
-                # If the message contains a photo, we edit the caption
                 await callback.message.edit_caption(caption=retry_text, reply_markup=kb, parse_mode="Markdown")
             else:
                 await callback.message.edit_text(text=retry_text, reply_markup=kb, parse_mode="Markdown")
         except Exception as edit_err:
             logger.error(f"Error editing message for subscription retry: {edit_err}")
-            # Fallback: send fresh message
             await bot.send_message(chat_id=user_id, text=retry_text, reply_markup=kb, parse_mode="Markdown")
 
+# Legacy select bonus handler kept for full backward compatibility
 @dp.callback_query(F.data.startswith("select_bonus:"))
 async def handle_bonus_selection(callback: CallbackQuery):
-    """
-    Step 4 Callback: Triggered when user clicks a dynamic bonus button.
-    Delivers the selected bonus content, sets stage to 4, and launches the daily warm-up scheduler.
-    """
+    """Step 4 Callback: Kept for backward compatibility."""
     user_id = callback.from_user.id
     bonus_value = callback.data.split(":")[1]
+    logger.info(f"Legacy bonus callback invoked by {user_id}: {bonus_value}")
     
-    logger.info(f"User {user_id} chosen bonus: {bonus_value}")
-    
-    user = await database.get_user(user_id)
-    if not user:
-        await callback.answer("⚠️ Пользователь не найден", show_alert=True)
-        return
-        
-    # CHANGED: Dynamically retrieve bonus configurations based on assigned expert persona profile (FEATURE 6)
-    persona = config.get_persona_for_user(user)
-    
-    if bonus_value not in persona["bonus_contents"]:
-        await callback.answer("⚠️ Бонус не найден", show_alert=True)
-        return
-        
     await callback.answer("🎁 Бонус отправлен!", show_alert=False)
-    
-    # 1. Update DB to Stage 4 (Bonus delivered, receiving warm-ups)
-    await database.set_user_funnel_stage(user_id, 4)
-    
-    # 2. Schedule progressive multi-day warm-up & long-term retention sequence (FEATURE 3 & 5)
-    scheduler.schedule_warmup_sequence(bot, user_id)
-    
-    # 3. CHANGED: Trigger CRM notification push to Closer Hub group chat (FEATURE 4)
-    await scheduler.notify_closer_hub(bot, user_id)
-    
-    # 4. Deliver the bonus text
-    bonus_text = persona["bonus_contents"][bonus_value]
-    
-    try:
-        # Delete the congratulations message to keep chat clean
-        await callback.message.delete()
-    except Exception as e:
-        logger.debug(f"Failed to delete step 4 congrats message: {e}")
-        
-    try:
-        await bot.send_message(
-            chat_id=user_id,
-            text=bonus_text,
-            parse_mode="Markdown",
-            disable_web_page_preview=False
-        )
-        logger.info(f"Successfully delivered bonus {bonus_value} to user {user_id}")
-    except Exception as e:
-        logger.error(f"Could not send bonus to user {user_id}: {e}")
+    await scheduler.transition_to_step_4(bot, user_id)
 
 # -------------------------------------------------------------
 # MAIN STARTUP FUNCTION

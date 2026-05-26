@@ -1,9 +1,10 @@
 # config.py
-# CHANGED: Added comprehensive comments and new sections (FEATURE 1, 2, 3, 4, 5, 6)
-# ==============================================================================
-# FULLY CONFIGURABLE PLATFORM FOR TELEGRAM WARM-UP & RETENTION FUNNELS ("СХЕМНЫЙ ТРАФ")
-# All text, personas, channels, content plans, and closer credentials reside here.
-# ==============================================================================
+# CHANGED: Expanded persona image structures from 3 to 5 images (image_1, image_2, image_3, image_4, image_5)
+# - Added Unsplash URLs for image_3 (quiz mid-point) and image_5 (dark-style final CTA card)
+# - Added PRIVATE_CLUB_LINK environment variable fallback
+# - Added DARK_CTA_CAPTION closing text template
+# - Implemented get_personalized_bonus() to dynamically map quiz answer combinations to appropriate bonuses
+
 import os
 from dotenv import load_dotenv
 
@@ -16,15 +17,15 @@ CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/example_channel")
 CHANNEL_NAME = os.getenv("CHANNEL_NAME", "Crypto Inside 📈")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-# CHANGED: Closer CRM Forwarding Destination Chat ID (FEATURE 4)
+# Closer CRM Forwarding Destination Chat ID
 CLOSER_NOTIFY_CHAT_ID = os.getenv("CLOSER_NOTIFY_CHAT_ID", "")
 if CLOSER_NOTIFY_CHAT_ID.startswith("-") or CLOSER_NOTIFY_CHAT_ID.isdigit():
     CLOSER_NOTIFY_CHAT_ID = int(CLOSER_NOTIFY_CHAT_ID)
 
+# CHANGED: Private Club link configuration
+PRIVATE_CLUB_LINK = os.getenv("PRIVATE_CLUB_LINK", "https://t.me/+joinchat_example")
 
-# CHANGED: Multi-Account Persona Support Configuration Profiles (FEATURE 6)
-# Each profile contains specialized persona names, niches, assets, and bonuses.
-# This enables completely different marketing funnels from a single bot instance.
+# CHANGED: Multi-Account Persona Support Configuration Profiles expanded to 5 images
 PERSONAS = {
     "alexander": {
         "id": "alexander",
@@ -34,7 +35,9 @@ PERSONAS = {
         "images": {
             "image_1": "https://images.unsplash.com/photo-1621761191319-c6fb62004040?w=1080",
             "image_2": "https://images.unsplash.com/photo-1579621970563-ebec7560ff3e?w=1080",
-            "image_4": "https://images.unsplash.com/photo-1513151233558-d860c5398176?w=1080",
+            "image_3": "https://images.unsplash.com/photo-1642790106117-e829e14a795f?w=1080",  # Quiz mid-point chart visual
+            "image_4": "https://images.unsplash.com/photo-1513151233558-d860c5398176?w=1080",  # Congrats
+            "image_5": "https://images.unsplash.com/photo-1518546305927-5a555bb7020d?w=1080",  # Dark style final CTA card
         },
         "bonus_options": [
             {"label": "🎁 Секретный DeFi Гайд", "value": "bonus_defi"},
@@ -69,7 +72,9 @@ PERSONAS = {
         "images": {
             "image_1": "https://images.unsplash.com/photo-1580587771525-78b9dba3b914?w=1080",
             "image_2": "https://images.unsplash.com/photo-1560518883-ce09059eeffa?w=1080",
-            "image_4": "https://images.unsplash.com/photo-1512403754473-278556139b0a?w=1080",
+            "image_3": "https://images.unsplash.com/photo-1503387762-592deb58ef4e?w=1080",  # Quiz mid-point real estate/architectural chart
+            "image_4": "https://images.unsplash.com/photo-1512403754473-278556139b0a?w=1080",  # Congrats
+            "image_5": "https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?w=1080",  # Dark luxury estate final CTA card
         },
         "bonus_options": [
             {"label": "🎁 Каталог: ТОП-5 вилл 2026", "value": "bonus_villas"},
@@ -96,30 +101,28 @@ PERSONAS = {
     }
 }
 
-
-# CHANGED: Multi-Channel / Multi-Group Referral Link Assignments (FEATURE 1)
-# Links users to a specific source channel and matches them to a unique marketing persona.
+# Multi-Channel / Multi-Group Referral Link Assignments
 CHANNELS = [
     {
         "id": "crypto_channel",
         "link": "https://t.me/crypto_inside_channel",
         "name": "Crypto Inside Channel 📈",
         "persona_id": "alexander",
-        "channel_id": "-1002222222222"  # Target verification ID (FEATURE 1)
+        "channel_id": "-1002222222222"
     },
     {
         "id": "estate_channel",
         "link": "https://t.me/estate_invest_channel",
         "name": "Real Estate Global 🏢",
         "persona_id": "elena",
-        "channel_id": "-1003333333333"  # Target verification ID (FEATURE 1)
+        "channel_id": "-1003333333333"
     }
 ]
 
 DEFAULT_PERSONA_ID = "alexander"
 
 def get_persona_for_user(user: dict) -> dict:
-    """Dynamically resolves the assigned persona config for a user based on their source channel (FEATURE 6)"""
+    """Dynamically resolves the assigned persona config for a user based on their source channel"""
     source_channel_id = user.get("source_channel")
     persona_id = DEFAULT_PERSONA_ID
     
@@ -132,7 +135,7 @@ def get_persona_for_user(user: dict) -> dict:
     return PERSONAS.get(persona_id, PERSONAS[DEFAULT_PERSONA_ID])
 
 def get_channel_id_for_user(user: dict) -> str:
-    """Dynamically resolves target verification channel ID based on source channel (FEATURE 1)"""
+    """Dynamically resolves target verification channel ID based on source channel"""
     source_channel_id = user.get("source_channel")
     if source_channel_id:
         for ch in CHANNELS:
@@ -140,24 +143,41 @@ def get_channel_id_for_user(user: dict) -> str:
                 return ch.get("channel_id", CHANNEL_ID)
     return CHANNEL_ID
 
+# CHANGED: Added quiz answer combination personalized bonus resolver
+def get_personalized_bonus(persona_id: str, q1: str, q2: str, q3: str) -> str:
+    """Dynamically resolves the personalized bonus content based on quiz responses."""
+    # We map combinations to bonus options:
+    # Beginner -> DeFi guide / Villas catalog
+    # Experienced or Professional -> Safe start checklist / ROI guide
+    if persona_id == "alexander":
+        if q1 == "beginner":
+            return "bonus_defi"
+        else:
+            return "bonus_checklist"
+    else:  # elena
+        if q1 == "beginner":
+            return "bonus_villas"
+        else:
+            return "bonus_roi"
 
-# CHANGED: Delays in minutes (FEATURE 3 & 5)
+
+# Delays in minutes
 # FOLLOW_UP_DELAYS[0] is the subscription nudge check (Step 2b) (e.g. 30 mins)
 # FOLLOW_UP_DELAYS[1:5] are the main content plan stages (e.g. 1h, 24h, 48h, 72h)
 # FOLLOW_UP_DELAYS[5:8] are the long-term retention stages (e.g. Day 7, Day 14, Day 30)
 FOLLOW_UP_DELAYS = [30, 60, 1440, 2880, 4320, 10080, 20160, 43200]
-
 
 # 4. Core Funnel Texts (Allows full translation/modification of messages)
 WELCOME_TEXT = (
     "👋 Приветствую! Меня зовут **{persona_name}**.\n\n"
     "Я — {persona_description}.\n\n"
     "Добро пожаловать в мой интерактивный бот-помощник! Моя цель — помочь тебе освоить **{niche}** и выйти на стабильный доход без лишнего риска.\n\n"
-    "Перед тем, как мы начнем, выбери свой текущий уровень опыта ниже 👇"
+    "Перед тем, как выдать тебе персональный бонус, давай пройдём короткий опрос из 3 вопросов 👇\n\n"
+    "**Вопрос 1: Какой у тебя уровень опыта в инвестициях?**"
 )
 
 SUBSCRIBE_CALL_TEXT = (
-    "🔥 Отличный выбор!\n\n"
+    "🔥 **Опрос завершен! Подходящий для тебя бонус подобран!**\n\n"
     "Чтобы получить доступ к закрытым материалам и забрать гарантированные подарки, "
     "тебе необходимо подписаться на мой официальный канал: **{channel_name}**.\n\n"
     "Подпишись по кнопке ниже и нажми «Я подписался» 👇"
@@ -172,14 +192,24 @@ ALREADY_SUBSCRIBED_NUDGE = "✅ Вы уже подписаны! Забирайт
 
 STEP_4_CONGRATS_TEXT = (
     "🎉 **Поздравляю! Подписка успешно подтверждена!**\n\n"
-    "Вы получили полный доступ к воронке полезных материалов.\n\n"
-    "Теперь выберите один из гарантированных бонусов ниже, чтобы начать 👇"
+    "Вы успешно прошли опрос и получили полный доступ к воронке полезных материалов.\n\n"
+    "На основе ваших ответов я подготовил индивидуальный результат:"
+)
+
+# CHANGED: Added closing dark-themed post template
+DARK_CTA_CAPTION = (
+    "🔥 **ДОБРО ПОЖАЛОВАТЬ В ЗАКРЫТЫЙ КЛУБ // {persona_name}**\n\n"
+    "Вы успешно прошли опрос, получили свой персональный бонус и подтвердили подписку!\n\n"
+    "Теперь перед вами открывается уникальная возможность — войти в наше приватное сообщество по **{niche}**.\n\n"
+    "**Что вас ждет внутри закрытого клуба:**\n"
+    "1️⃣ Ежедневная инсайдерская аналитика рынка\n"
+    "2️⃣ Совместные сделки и разбор инвест-идей\n"
+    "3️⃣ Прямой доступ к сильному окружению и единомышленникам\n\n"
+    "👇 Нажмите кнопку ниже прямо сейчас, чтобы занять свое место в клубе совершенно бесплатно!"
 )
 
 
-# CHANGED: Extended Warm-up Sequence Content Plan Supporting 8 Message Types (FEATURE 3)
-# Allows configuring highly dynamic warm-up sequences mapping to specialized types.
-# Placeholders like {persona_name}, {niche}, and {channel_name} are resolved dynamically.
+# Extended Warm-up Sequence Content Plan Supporting 8 Message Types
 CONTENT_PLAN = [
     {
         "type": "market_review",
@@ -234,8 +264,7 @@ CONTENT_PLAN = [
 ]
 
 
-# CHANGED: Retention Sequence Configurations for Long-Term Engagement (FEATURE 5)
-# Days 7, 14, and 30 messages to reactivate and warm up cold traffic.
+# Retention Sequence Configurations for Long-Term Engagement
 RETENTION_PLAN = [
     {
         "stage": 1,
@@ -274,6 +303,7 @@ RETENTION_PLAN = [
         ]
     }
 ]
+
 
 # ==============================================================================
 # NEW: AI CONTENT & AUTOPOSTING & MULTI-ACCOUNT MANAGER SYSTEM CONFIGURATION
@@ -323,4 +353,3 @@ FOLLOWUP_SCRIPTS = [
         "Посмотри наш официальный канал: {channel_link}. Если надумаешь — пиши, я всегда на связи. Удачи!"
     )
 ]
-

@@ -1,12 +1,10 @@
 # scheduler.py
-# CHANGED: Added comment block listing updates (FEATURE 1, 3, 4, 5, 6)
-# - safe_send() handles TelegramForbiddenError and fallback to text
-# - send_subscription_nudge() resolves target channel ID and link dynamically
-# - send_warmup_message() resolves custom persona configs for texts
-# - Added send_retention_message() for Day 7, 14, 30 re-engagement with 'cold' status update
-# - Added notify_closer_hub() for CRM forwarding notifications to Closer Hub
-# - transition_to_step_4() pulls congratulations image and bonuses from the persona profile
-# - restore_scheduled_jobs() recovers both active content plans and retention plan sequences
+# CHANGED: Upgraded transition and checks to support visual quiz funnel flow:
+# - Updated send_warmup_message() to execute for both stage 4 and stage 5 active users
+# - Upgraded notify_closer_hub() to fetch and format Q1, Q2, and Q3 quiz answers for CRM logs
+# - Rewrote transition_to_step_4() to auto-resolve personalized bonuses, deliver them with image_4,
+#   advance stage to 5, and immediately send the final dark-themed CTA card with image_5
+# - Updated restore_scheduled_jobs() startup recovery to handle both stage 4 and stage 5
 
 from datetime import datetime, timedelta
 import logging
@@ -24,7 +22,6 @@ logger = logging.getLogger(__name__)
 # Initialize the scheduler with UTC timezone
 scheduler = AsyncIOScheduler(timezone=pytz.utc)
 
-# CHANGED: Added utility function safe_send to deduplicate message sending logic (TASK 4)
 async def safe_send(bot: Bot, user_id: int, text: str, photo: str = None, kb = None) -> bool:
     """
     Safely sends a text or photo message to a user.
@@ -94,7 +91,7 @@ async def send_subscription_nudge(bot: Bot, user_id: int):
 
     logger.info(f"Running scheduled subscription nudge check for user {user_id}")
     
-    # 1. CHANGED: Dynamically resolve correct target verification ID based on user source channel (FEATURE 1)
+    # 1. Dynamically resolve correct target verification ID based on user source channel
     target_channel_id = config.get_channel_id_for_user(user)
     
     # 2. Check current subscription via API
@@ -115,7 +112,7 @@ async def send_subscription_nudge(bot: Bot, user_id: int):
         return
 
     # If not subscribed, send nudge (Step 2b)
-    # CHANGED: Dynamically resolves specific referral channel link for the nudge buttons (FEATURE 1)
+    # Dynamically resolves specific referral channel link for the nudge buttons
     channel_link = None
     source_channel_id = user.get("source_channel")
     if source_channel_id:
@@ -126,7 +123,7 @@ async def send_subscription_nudge(bot: Bot, user_id: int):
                 
     kb = keyboards.get_nudge_keyboard(channel_link)
     
-    # CHANGED: Resolve assigned persona profile to pull customized nudge graphics (FEATURE 6)
+    # Resolve assigned persona profile to pull customized nudge graphics (image_2)
     persona = config.get_persona_for_user(user)
     nudge_photo = persona["images"].get("image_2", config.IMAGE_2)
     
@@ -136,11 +133,12 @@ async def send_subscription_nudge(bot: Bot, user_id: int):
 async def send_warmup_message(bot: Bot, user_id: int, sequence_index: int):
     """
     Sends the scheduled progressive warm-up message to the user.
-    Only executes if the user is in stage 4 (active subscribed user receiving warm-ups).
+    Only executes if the user is in stage 4 or stage 5 (active subscribed user receiving warm-ups).
     """
     user = await database.get_user(user_id)
-    if not user or user.get("is_blocked") or user["этап_воронки"] != 4:
-        logger.info(f"Skipping warm-up {sequence_index} for user {user_id} (blocked or not in stage 4)")
+    # CHANGED: Allow stage 4 or stage 5
+    if not user or user.get("is_blocked") or user["этап_воронки"] not in [4, 5]:
+        logger.info(f"Skipping warm-up {sequence_index} for user {user_id} (blocked or not in stage 4/5)")
         return
         
     # Get the sequence data
@@ -149,10 +147,10 @@ async def send_warmup_message(bot: Bot, user_id: int, sequence_index: int):
         
     seq = config.CONTENT_PLAN[sequence_index]
     
-    # CHANGED: Dynamically resolve correct marketing persona configurations (FEATURE 6)
+    # Dynamically resolve correct marketing persona configurations
     persona = config.get_persona_for_user(user)
     
-    # CHANGED: Format placeholders using assigned expert properties (FEATURE 6)
+    # Format placeholders using assigned expert properties
     text = seq["text"].format(
         persona_name=persona["name"],
         persona_description=persona["description"],
@@ -167,15 +165,14 @@ async def send_warmup_message(bot: Bot, user_id: int, sequence_index: int):
         
     image_url = seq.get("image")
     
-    # Using safe_send() utility function to send warm-up sequences safely (TASK 4)
+    # Using safe_send() utility function to send warm-up sequences safely
     await safe_send(bot, user_id, text, photo=image_url, kb=kb)
     logger.info(f"Warmup task executed for user {user_id}, index {sequence_index} ({seq['type']})")
 
-# CHANGED: Added send_retention_message to support Days 7, 14, 30 re-engagement sequence (FEATURE 5)
 async def send_retention_message(bot: Bot, user_id: int, retention_index: int):
     """
     Sends the long-term re-engagement retention messages.
-    If the user completes Day 30 without further interaction, marks their status as 'cold' (FEATURE 5).
+    If the user completes Day 30 without further interaction, marks their status as 'cold'.
     """
     user = await database.get_user(user_id)
     if not user or user.get("is_blocked") or user.get("status") != "active":
@@ -208,16 +205,15 @@ async def send_retention_message(bot: Bot, user_id: int, retention_index: int):
         stage_num = ret["stage"]
         await database.set_user_retention_stage(user_id, stage_num)
         
-        # If this is the final retention check (Day 30), mark the user as 'cold' (FEATURE 5)
+        # If this is the final retention check (Day 30), mark the user as 'cold'
         if retention_index == len(config.RETENTION_PLAN) - 1:
             await database.set_user_status(user_id, "cold")
             logger.info(f"User {user_id} reached final retention step. Marked as cold.")
 
-# CHANGED: Added notify_closer_hub lead CRM forwarder (FEATURE 4)
 async def notify_closer_hub(bot: Bot, user_id: int):
     """
-    Pushes lead details, source channel, traffic parameter, and a direct conversation 
-    deep-link to the CLOSER_NOTIFY_CHAT_ID Telegram CRM group chat. (FEATURE 4)
+    Pushes lead details, source channel, traffic parameter, quiz answers (Q1/Q2/Q3),
+    and a direct conversation deep-link to the CLOSER_NOTIFY_CHAT_ID Telegram CRM group chat.
     """
     if not config.CLOSER_NOTIFY_CHAT_ID:
         logger.warning("CLOSER_NOTIFY_CHAT_ID is not configured. Skipping Closer notification.")
@@ -230,10 +226,15 @@ async def notify_closer_hub(bot: Bot, user_id: int):
     # Gather statistics
     username = user["username"]
     username_str = f"@{username}" if username and username != "unknown" else "Отсутствует"
-    chosen_bonus = user.get("оффер", "Не выбран")
+    chosen_bonus = user.get("bonus_variant") or "Не выбран"
     traffic_source = user.get("traffic_source") or "Прямой переход"
     source_channel_id = user.get("source_channel") or "Не указан"
     join_date = user.get("дата_входа")
+    
+    # CHANGED: Added Q1, Q2, Q3 quiz answers
+    q1 = user.get("quiz_q1") or "Не указан"
+    q2 = user.get("quiz_q2") or "Не указан"
+    q3 = user.get("quiz_q3") or "Не указан"
     
     # Build direct dialog deep links
     chat_link = f"tg://user?id={user_id}"
@@ -251,7 +252,11 @@ async def notify_closer_hub(bot: Bot, user_id: int):
         "🔥 **НОВЫЙ ЛИД В ВОРОНКЕ (Closer Hub)**\n\n"
         f"👤 **Пользователь:** {username_str}\n"
         f"🆔 **Telegram ID:** `{user_id}`\n"
-        f"🎁 **Выбранный оффер:** `{chosen_bonus}`\n"
+        f"🎁 **Выданный бонус:** `{chosen_bonus}`\n"
+        f"📊 **Ответы на опрос:**\n"
+        f"  🔹 *Опыт:* {q1}\n"
+        f"  🔹 *Цель:* {q2}\n"
+        f"  🔹 *Капитал:* {q3}\n"
         f"📢 **Источник (канал):** {source_channel_name}\n"
         f"🔗 **Трафик (UTM/Ref):** `{traffic_source}`\n"
         f"📅 **Дата входа:** {join_date}\n\n"
@@ -302,7 +307,7 @@ def schedule_warmup_sequence(bot: Bot, user_id: int):
     
     now = datetime.now(pytz.utc)
     
-    # 1. CHANGED: Schedule the 8 message types Warm-up Content Plan (FEATURE 3)
+    # 1. Schedule the 8 message types Warm-up Content Plan
     for i, seq in enumerate(config.CONTENT_PLAN):
         delay_idx = seq["delay_index"]
         if delay_idx >= len(config.FOLLOW_UP_DELAYS):
@@ -322,7 +327,7 @@ def schedule_warmup_sequence(bot: Bot, user_id: int):
         )
         logger.info(f"Scheduled content plan message #{i} ({seq['type']}) for user {user_id} at {run_time}")
         
-    # 2. CHANGED: Schedule the Retention Sequence (Day 7, 14, 30) (FEATURE 5)
+    # 2. Schedule the Retention Sequence (Day 7, 14, 30)
     for j, ret in enumerate(config.RETENTION_PLAN):
         delay_idx = ret["delay_index"]
         if delay_idx >= len(config.FOLLOW_UP_DELAYS):
@@ -363,7 +368,7 @@ def cancel_active_jobs_for_user(user_id: int):
         except Exception as e:
             logger.debug(f"Failed to cancel warmup job {warmup_id}: {e}")
             
-    # CHANGED: Cancel retention jobs (FEATURE 5)
+    # Cancel retention jobs
     for j in range(len(config.RETENTION_PLAN)):
         ret_id = f"retention_{user_id}_{j}"
         try:
@@ -377,30 +382,68 @@ def cancel_active_jobs_for_user(user_id: int):
 # FUNNEL ROUTING ASSISTANT
 # -------------------------------------------------------------
 
+# CHANGED: Completely upgraded to auto-deliver personalized bonus & immediately send dark CTA card
 async def transition_to_step_4(bot: Bot, user_id: int):
-    """Transition helper to step 4 (congratulations and bonus selection markup)."""
+    """
+    Transition helper to step 4 (congratulations and personalized bonus delivery),
+    followed immediately by transition to Step 5 (final dark-themed CTA post).
+    """
     # 1. Update database to Stage 4 (Subscribed & Ready for warming)
     await database.set_user_funnel_stage(user_id, 4)
     
     # 2. Cancel the outstanding nudge job since they successfully verified
     cancel_active_jobs_for_user(user_id)
     
-    # 3. Present Step 4 visual & markup
+    # 3. Present Step 4 visual & auto-delivered personalized bonus
     user = await database.get_user(user_id)
     if not user:
         return
         
-    # CHANGED: Fetch assigned marketing persona dynamically (FEATURE 6)
     persona = config.get_persona_for_user(user)
-    kb = keyboards.get_bonus_keyboard(persona)
-    congrats_text = config.STEP_4_CONGRATS_TEXT
     
-    # CHANGED: Retrieve customized step 4 visual photo from assigned persona (FEATURE 6)
-    photo_to_send = persona["images"].get("image_4", config.IMAGE_4)
+    # Resolve the personalized bonus dynamically based on user quiz answers
+    bonus_val = user.get("bonus_variant")
+    if not bonus_val or bonus_val not in persona["bonus_contents"]:
+        # Fallback in case it wasn't saved correctly
+        bonus_val = config.get_personalized_bonus(
+            persona["id"], 
+            user.get("quiz_q1", "beginner"), 
+            user.get("quiz_q2", "passive_income"), 
+            user.get("quiz_q3", "under_500")
+        )
+        
+    bonus_text = persona["bonus_contents"].get(bonus_val, "")
+    congrats_text = f"{config.STEP_4_CONGRATS_TEXT}\n\n{bonus_text}"
     
-    # Using safe_send() utility function to handle congrats selection message (TASK 4)
-    await safe_send(bot, user_id, congrats_text, photo=photo_to_send, kb=kb)
-    logger.info(f"Successfully transitioned user {user_id} to Step 4")
+    # Congratulations / bonus reveal photo (image_4)
+    congrats_photo = persona["images"].get("image_4", config.IMAGE_4)
+    
+    # Deliver the bonus
+    await safe_send(bot, user_id, congrats_text, photo=congrats_photo)
+    logger.info(f"Successfully delivered personalized bonus '{bonus_val}' to user {user_id} (Stage 4)")
+    
+    # 4. Schedule progressive multi-day warm-up & long-term retention sequences
+    schedule_warmup_sequence(bot, user_id)
+    
+    # 5. Trigger CRM notification push to Closer Hub group chat
+    await notify_closer_hub(bot, user_id)
+    
+    # 6. Instantly transition to Stage 5 (Deliver Final Dark CTA Card)
+    await database.set_user_funnel_stage(user_id, 5)
+    
+    # Dark style final CTA card visual (image_5)
+    dark_photo = persona["images"].get("image_5")
+    
+    # Formulate dark CTA caption
+    cta_text = config.DARK_CTA_CAPTION.format(
+        persona_name=persona["name"],
+        niche=persona["niche"]
+    )
+    
+    kb = keyboards.get_dark_cta_keyboard(config.PRIVATE_CLUB_LINK)
+    
+    await safe_send(bot, user_id, cta_text, photo=dark_photo, kb=kb)
+    logger.info(f"Successfully transitioned user {user_id} to Step 5 (Dark CTA Card delivered)")
 
 # -------------------------------------------------------------
 # STARTUP RESTORATION / RECOVERY LOGIC
@@ -464,7 +507,8 @@ async def restore_scheduled_jobs(bot: Bot):
                 )
                 restored_count += 1
                 
-        elif stage == 4:
+        # CHANGED: Allow stage 4 and stage 5
+        elif stage in [4, 5]:
             # User has selected a bonus, and is receiving warm-ups & retentions.
             # Schedule only warmup/content plan jobs that are still in the future!
             for i, seq in enumerate(config.CONTENT_PLAN):
@@ -485,7 +529,7 @@ async def restore_scheduled_jobs(bot: Bot):
                     )
                     restored_count += 1
                     
-            # CHANGED: Reschedule future long-term retention jobs (FEATURE 5)
+            # Reschedule future long-term retention jobs
             for j, ret in enumerate(config.RETENTION_PLAN):
                 delay_idx = ret["delay_index"]
                 if delay_idx >= len(config.FOLLOW_UP_DELAYS):
@@ -521,4 +565,3 @@ async def start_scheduler_tasks(bot: Bot):
     # 3. Register manager followup periodic checking loop
     accounts.schedule_manager_loops()
     logger.info("Auto-posting and userbot check loops registered successfully.")
-

@@ -1,9 +1,10 @@
 # database.py
-# CHANGED: Added comment block listing updates (FEATURE 1, 2, 4, 5, 6)
-# - Added safe column migration in init_db() for traffic, closer, and retention columns
-# - Updated add_or_update_user to support traffic tracking parameters and reset them on re-entry
-# - Added closer and retention status updating helpers
-# - Added get_full_stats() multi-dimensional analytics database query
+# CHANGED: Added quiz-related database schema upgrades (Q1, Q2, Q3, bonus_variant)
+# - Extended columns_to_add in init_db() to safely create new columns if not present
+# - Reset new quiz columns to empty/NULL inside add_or_update_user() upon re-entry
+# - Added set_user_quiz_q1(), set_user_quiz_q2(), and set_user_quiz_q3() helper functions
+# - Upgraded get_funnel_stats() and get_full_stats() to include Stage 5 count
+# - Added answer breakdowns for Q1/Q2/Q3 and top 5 quiz paths inside get_full_stats()
 
 import aiosqlite
 from datetime import datetime, timezone
@@ -13,17 +14,15 @@ DB_PATH = "funnel_bot.db"
 
 logger = logging.getLogger(__name__)
 
-# Global variable to hold a single persistent database connection (TASK 3)
+# Global variable to hold a single persistent database connection
 _db_connection = None
 
-# Helper function to get the shared database connection (TASK 3)
 def get_db():
     global _db_connection
     if _db_connection is None:
         raise RuntimeError("Database connection not initialized. Call init_db() first.")
     return _db_connection
 
-# Helper function to close the shared database connection (TASK 3)
 async def close_db():
     global _db_connection
     if _db_connection is not None:
@@ -50,7 +49,7 @@ async def init_db():
         )
     """)
     
-    # CHANGED: Added safe column migration for all new fields (FEATURE 1, 2, 4, 5)
+    # CHANGED: Added quiz answers and bonus variant column migrations
     columns_to_add = [
         ("is_blocked", "INTEGER DEFAULT 0"),
         ("source_channel", "TEXT"),
@@ -59,7 +58,11 @@ async def init_db():
         ("traffic_source", "TEXT"),
         ("closer_notified", "INTEGER DEFAULT 0"),
         ("retention_stage", "INTEGER DEFAULT 0"),
-        ("status", "TEXT DEFAULT 'active'")
+        ("status", "TEXT DEFAULT 'active'"),
+        ("quiz_q1", "TEXT"),
+        ("quiz_q2", "TEXT"),
+        ("quiz_q3", "TEXT"),
+        ("bonus_variant", "TEXT")
     ]
     for col_name, col_type in columns_to_add:
         try:
@@ -68,12 +71,12 @@ async def init_db():
             # Column already exists
             pass
             
-    # Create database indexes to optimize queries (TASK 6)
+    # Create database indexes to optimize queries
     await db.execute("CREATE INDEX IF NOT EXISTS idx_stage ON users(этап_воронки);")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_blocked ON users(is_blocked);")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_stage_blocked ON users(этап_воронки, is_blocked);")
     
-    # NEW: Initialize channel autopost logs and manager session message tables
+    # Initialize channel autopost logs and manager session message tables
     await db.execute("""
         CREATE TABLE IF NOT EXISTS channel_post_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,8 +112,8 @@ async def add_or_update_user(
 ) -> bool:
     """
     Creates a new user or updates the username if the user already exists.
-    Updates the join date (дата_входа) to current UTC time on re-entry (TASK 2).
-    CHANGED: Restores/refreshes traffic and referral tracking parameters on re-entry (FEATURE 1 & 2).
+    Updates the join date (дата_входа) to current UTC time on re-entry.
+    Resets all quiz answers and bonus variables on re-entry.
     """
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     db = get_db()
@@ -123,22 +126,24 @@ async def add_or_update_user(
         await db.execute("""
             INSERT INTO users (
                 telegram_id, username, дата_входа, статус_подписки, этап_воронки, is_blocked,
-                source_channel, utm_source, utm_campaign, traffic_source, closer_notified, retention_stage, status
+                source_channel, utm_source, utm_campaign, traffic_source, closer_notified, retention_stage, status,
+                quiz_q1, quiz_q2, quiz_q3, bonus_variant
             )
-            VALUES (?, ?, ?, 0, 1, 0, ?, ?, ?, ?, 0, 0, 'active')
+            VALUES (?, ?, ?, 0, 1, 0, ?, ?, ?, ?, 0, 0, 'active', '', '', '', '')
         """, (telegram_id, username, now_str, source_channel, utm_source, utm_campaign, traffic_source))
         logger.info(f"New user registered: {telegram_id} (@{username}) via: {source_channel}")
         is_new = True
     else:
-        # Existing user - update username, reset blocked state, reset stage to 1, reset closer/retention, and update tracking (FEATURE 1, 2, 4, 5)
+        # Existing user - update username, reset blocked state, reset stage to 1, reset closer/retention, and reset quiz answers on re-entry
         await db.execute("""
             UPDATE users 
             SET username = ?, этап_воронки = 1, is_blocked = 0, дата_входа = ?,
                 source_channel = ?, utm_source = ?, utm_campaign = ?, traffic_source = ?,
-                closer_notified = 0, retention_stage = 0, status = 'active'
+                closer_notified = 0, retention_stage = 0, status = 'active',
+                quiz_q1 = '', quiz_q2 = '', quiz_q3 = '', bonus_variant = ''
             WHERE telegram_id = ?
         """, (username, now_str, source_channel, utm_source, utm_campaign, traffic_source, telegram_id))
-        logger.info(f"Existing user re-entered: {telegram_id} (@{username}). Date and tracking refreshed.")
+        logger.info(f"Existing user re-entered: {telegram_id} (@{username}). Quiz and tracking reset.")
         is_new = False
         
     await db.commit()
@@ -164,6 +169,40 @@ async def set_user_offer(telegram_id: int, offer: str):
     """, (offer, telegram_id))
     await db.commit()
     logger.info(f"User {telegram_id} chose offer: {offer}. Stage set to 2.")
+
+# CHANGED: Added intermediate quiz progress setters
+async def set_user_quiz_q1(telegram_id: int, answer: str):
+    """Saves the answer to Q1 (Experience Level) in the database."""
+    db = get_db()
+    await db.execute("""
+        UPDATE users
+        SET quiz_q1 = ?
+        WHERE telegram_id = ?
+    """, (answer, telegram_id))
+    await db.commit()
+    logger.info(f"User {telegram_id} answered Q1: {answer}.")
+
+async def set_user_quiz_q2(telegram_id: int, answer: str):
+    """Saves the answer to Q2 (Main Goal) in the database."""
+    db = get_db()
+    await db.execute("""
+        UPDATE users
+        SET quiz_q2 = ?
+        WHERE telegram_id = ?
+    """, (answer, telegram_id))
+    await db.commit()
+    logger.info(f"User {telegram_id} answered Q2: {answer}.")
+
+async def set_user_quiz_q3(telegram_id: int, answer: str, bonus_variant: str):
+    """Saves the answer to Q3 (Starting Capital) and the resolved bonus variant, advancing to stage 2."""
+    db = get_db()
+    await db.execute("""
+        UPDATE users
+        SET quiz_q3 = ?, bonus_variant = ?, этап_воронки = 2
+        WHERE telegram_id = ?
+    """, (answer, bonus_variant, telegram_id))
+    await db.commit()
+    logger.info(f"User {telegram_id} answered Q3: {answer}. Bonus variant resolved: {bonus_variant}. Stage set to 2.")
 
 async def set_user_subscription(telegram_id: int, subscribed: bool):
     """Updates the user's subscription status."""
@@ -193,7 +232,6 @@ async def set_user_blocked(telegram_id: int, blocked: bool):
     status_val = 1 if blocked else 0
     status_text = "blocked" if blocked else "active"
     db = get_db()
-    # CHANGED: Sync overall status with blocked state (FEATURE 5)
     await db.execute("""
         UPDATE users
         SET is_blocked = ?, status = ?
@@ -202,9 +240,8 @@ async def set_user_blocked(telegram_id: int, blocked: bool):
     await db.commit()
     logger.info(f"User {telegram_id} is_blocked set to {status_val}. Status set to {status_text}.")
 
-# CHANGED: Added set_closer_notified helper (FEATURE 4)
 async def set_closer_notified(telegram_id: int, notified: int):
-    """Updates the user's closer notified state (FEATURE 4)."""
+    """Updates the user's closer notified state."""
     db = get_db()
     await db.execute("""
         UPDATE users
@@ -214,9 +251,8 @@ async def set_closer_notified(telegram_id: int, notified: int):
     await db.commit()
     logger.info(f"User {telegram_id} closer_notified set to {notified}.")
 
-# CHANGED: Added set_user_retention_stage helper (FEATURE 5)
 async def set_user_retention_stage(telegram_id: int, stage: int):
-    """Updates the user's retention sequence stage (FEATURE 5)."""
+    """Updates the user's retention sequence stage."""
     db = get_db()
     await db.execute("""
         UPDATE users
@@ -226,9 +262,8 @@ async def set_user_retention_stage(telegram_id: int, stage: int):
     await db.commit()
     logger.info(f"User {telegram_id} retention stage set to {stage}.")
 
-# CHANGED: Added set_user_status helper (FEATURE 5)
 async def set_user_status(telegram_id: int, status: str):
-    """Updates the user's overall system status (e.g., active, cold, blocked) (FEATURE 5)."""
+    """Updates the user's overall system status (e.g., active, cold, blocked)."""
     db = get_db()
     await db.execute("""
         UPDATE users
@@ -247,10 +282,10 @@ async def get_all_users() -> list[dict]:
         return [dict(row) for row in rows]
 
 async def get_funnel_stats() -> dict:
-    """Calculates conversion and funnel stage statistics using optimized grouped queries (TASK 5)."""
+    """Calculates conversion and funnel stage statistics using optimized grouped queries."""
     db = get_db()
     
-    stage_counts = {1: 0, 2: 0, 3: 0, 4: 0}
+    stage_counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
     
     # Query 1: Group and count non-blocked users by funnel stage
     async with db.execute("SELECT этап_воронки, COUNT(*) FROM users WHERE is_blocked = 0 GROUP BY этап_воронки") as cursor:
@@ -266,7 +301,7 @@ async def get_funnel_stats() -> dict:
         blocked = row[0] or 0
         
     total = sum(stage_counts.values()) + blocked
-    conversion = (stage_counts[4] / total) * 100 if total > 0 else 0.0
+    conversion = (stage_counts[4] + stage_counts[5]) / total * 100 if total > 0 else 0.0
     
     return {
         "total": total,
@@ -274,15 +309,15 @@ async def get_funnel_stats() -> dict:
         "stage_2": stage_counts[2],
         "stage_3": stage_counts[3],
         "stage_4": stage_counts[4],
+        "stage_5": stage_counts[5],
         "blocked": blocked,
         "conversion": conversion
     }
 
-# CHANGED: Added get_full_stats() multi-dimensional analytics database query (FEATURE 1, 2, 4, 5)
 async def get_full_stats() -> dict:
     """
     Calculates comprehensive multi-dimensional funnel statistics for the /admin_full command,
-    including channels, traffic sources, stages, leads sent to closer, and retention/cold statuses.
+    upgraded to display quiz breakdowns, top paths, and stage 5 counts.
     """
     db = get_db()
     
@@ -291,7 +326,7 @@ async def get_full_stats() -> dict:
         total = (await c.fetchone())[0] or 0
         
     # 2. Stages breakdown (for non-blocked active/cold users)
-    stage_counts = {1: 0, 2: 0, 3: 0, 4: 0}
+    stage_counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
     async with db.execute("SELECT этап_воронки, COUNT(*) FROM users WHERE is_blocked = 0 GROUP BY этап_воронки") as cursor:
         async for row in cursor:
             stage_idx = row[0]
@@ -329,8 +364,42 @@ async def get_full_stats() -> dict:
             status_name = row[0]
             if status_name in status_counts:
                 status_counts[status_name] = row[1]
+                
+    # 7. CHANGED: Quiz breakdowns (Q1, Q2, Q3)
+    q1_breakdown = {}
+    async with db.execute("SELECT quiz_q1, COUNT(*) FROM users WHERE quiz_q1 IS NOT NULL AND quiz_q1 != '' GROUP BY quiz_q1") as cursor:
+        async for row in cursor:
+            q1_breakdown[row[0]] = row[1]
             
-    conversion = (stage_counts[4] / total) * 100 if total > 0 else 0.0
+    q2_breakdown = {}
+    async with db.execute("SELECT quiz_q2, COUNT(*) FROM users WHERE quiz_q2 IS NOT NULL AND quiz_q2 != '' GROUP BY quiz_q2") as cursor:
+        async for row in cursor:
+            q2_breakdown[row[0]] = row[1]
+            
+    q3_breakdown = {}
+    async with db.execute("SELECT quiz_q3, COUNT(*) FROM users WHERE quiz_q3 IS NOT NULL AND quiz_q3 != '' GROUP BY quiz_q3") as cursor:
+        async for row in cursor:
+            q3_breakdown[row[0]] = row[1]
+            
+    # 8. CHANGED: Most popular quiz answer paths (top 5)
+    popular_paths = []
+    async with db.execute("""
+        SELECT quiz_q1, quiz_q2, quiz_q3, COUNT(*) 
+        FROM users 
+        WHERE quiz_q1 IS NOT NULL AND quiz_q1 != ''
+          AND quiz_q2 IS NOT NULL AND quiz_q2 != ''
+          AND quiz_q3 IS NOT NULL AND quiz_q3 != ''
+        GROUP BY quiz_q1, quiz_q2, quiz_q3 
+        ORDER BY COUNT(*) DESC 
+        LIMIT 5
+    """) as cursor:
+        async for row in cursor:
+            popular_paths.append({
+                "path": f"{row[0]} ➔ {row[1]} ➔ {row[2]}",
+                "count": row[3]
+            })
+            
+    conversion = ((stage_counts[4] + stage_counts[5]) / total) * 100 if total > 0 else 0.0
     
     return {
         "total": total,
@@ -339,7 +408,11 @@ async def get_full_stats() -> dict:
         "utm_sources": utm_source_counts,
         "closer_leads": closer_leads,
         "statuses": status_counts,
-        "conversion": conversion
+        "conversion": conversion,
+        "q1_breakdown": q1_breakdown,
+        "q2_breakdown": q2_breakdown,
+        "q3_breakdown": q3_breakdown,
+        "popular_paths": popular_paths
     }
 
 # NEW: Added tables and query helper functions for Channel Autoposting and Multi-Account Manager Systems
@@ -412,4 +485,3 @@ async def mark_replied(session_name: str, target_user_id: int):
     """, (session_name, target_user_id))
     await db.commit()
     logger.info(f"Marked user {target_user_id} as replied for manager session '{session_name}'.")
-
