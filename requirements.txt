@@ -3,3 +3,6 @@ apscheduler==3.10.4
 pytz==2024.1
 aiosqlite==0.20.0
 python-dotenv==1.0.1  # CHANGED: Added python-dotenv for env variables
+google-generativeai==0.5.4
+telethon==1.35.0
+

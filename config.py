@@ -274,3 +274,53 @@ RETENTION_PLAN = [
         ]
     }
 ]
+
+# ==============================================================================
+# NEW: AI CONTENT & AUTOPOSTING & MULTI-ACCOUNT MANAGER SYSTEM CONFIGURATION
+# ==============================================================================
+
+# AI Content Generation
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+
+# Auto-posting schedule (UTC times)
+POSTING_SCHEDULE = ["09:00", "17:00"]
+
+# Manager accounts (Telethon userbots)
+TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID", "0"))
+TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
+
+MANAGER_ACCOUNTS = [
+    {
+        "session": "manager_1",
+        "persona_id": "alexander",  # must match a key in PERSONAS dict
+        "groups": [],  # fill with @group_usernames
+        "phone": os.getenv("MANAGER_1_PHONE", "")
+    }
+]
+
+# Communication scripts
+FIRST_MESSAGE_SCRIPT = (
+    "Привет! Рад видеть тебя в нашей группе. 👋\n\n"
+    "Меня зовут {persona_name}. Я вижу, что ты интересуешься сферой {niche}.\n"
+    "Специально для новых участников я подготовил полезный подарок! Хочешь получить?"
+)
+
+FOLLOWUP_SCRIPTS = [
+    # Day 1 Followup (24 hours)
+    (
+        "👋 Привет! Вчера писал тебе насчет подарка по {niche}. Заметил, что ты не ответил.\n\n"
+        "Специально для тебя я выложил бесплатный гайд, который поможет тебе сэкономить кучу времени. Скинуть ссылку?"
+    ),
+    # Day 3 Followup (72 hours)
+    (
+        "🔥 Привет! Всё ещё актуальна тема заработка на {niche}?\n\n"
+        "Мы сейчас запускаем новый закрытый поток участников, и осталось буквально 2 места. Если интересно получить подробности, просто напиши мне «ИНТЕРЕСНО» в ответ."
+    ),
+    # Day 5 Followup (120 hours)
+    (
+        "Привет! Последний раз пишу тебе по поводу {niche}.\n\n"
+        "Если ты действительно хочешь выйти на стабильный доход и не терять время зря — это твой финальный шанс. "
+        "Посмотри наш официальный канал: {channel_link}. Если надумаешь — пиши, я всегда на связи. Удачи!"
+    )
+]
+

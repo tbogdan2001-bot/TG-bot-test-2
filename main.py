@@ -60,6 +60,9 @@ async def on_startup():
     
     # 3. Restore all active scheduled jobs (Nudges & Warmups)
     await scheduler.restore_scheduled_jobs(bot)
+    
+    # 4. NEW: Start Telethon userbots and schedule auto-posting / manager followups
+    await scheduler.start_scheduler_tasks(bot)
 
 async def on_shutdown():
     """Triggered when the bot stops polling."""

@@ -505,3 +505,20 @@ async def restore_scheduled_jobs(bot: Bot):
                     restored_count += 1
                     
     logger.info(f"Startup recovery completed. Restored {restored_count} active jobs.")
+
+# NEW: Added auto-posting and manager scheduler task registration on startup
+async def start_scheduler_tasks(bot: Bot):
+    """Starts the Telethon userbots and registers auto-posting and follow-up periodic jobs."""
+    import autoposter
+    import accounts
+    
+    # 1. Start Telethon manager userbot sessions
+    await accounts.start_manager_accounts()
+    
+    # 2. Register auto-posting cron jobs
+    autoposter.schedule_channel_posts(bot)
+    
+    # 3. Register manager followup periodic checking loop
+    accounts.schedule_manager_loops()
+    logger.info("Auto-posting and userbot check loops registered successfully.")
+

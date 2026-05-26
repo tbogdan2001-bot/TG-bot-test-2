@@ -73,6 +73,29 @@ async def init_db():
     await db.execute("CREATE INDEX IF NOT EXISTS idx_blocked ON users(is_blocked);")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_stage_blocked ON users(этап_воронки, is_blocked);")
     
+    # NEW: Initialize channel autopost logs and manager session message tables
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS channel_post_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel_id TEXT NOT NULL,
+            content_type TEXT NOT NULL,
+            post_index INTEGER NOT NULL,
+            post_text TEXT NOT NULL,
+            posted_at TEXT NOT NULL
+        )
+    """)
+    
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS manager_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_name TEXT NOT NULL,
+            target_user_id INTEGER NOT NULL,
+            step INTEGER NOT NULL,
+            sent_at TEXT NOT NULL,
+            replied INTEGER DEFAULT 0
+        )
+    """)
+    
     await db.commit()
     logger.info("Database initialized successfully.")
 
@@ -318,3 +341,75 @@ async def get_full_stats() -> dict:
         "statuses": status_counts,
         "conversion": conversion
     }
+
+# NEW: Added tables and query helper functions for Channel Autoposting and Multi-Account Manager Systems
+async def log_channel_post(channel_id: str, content_type: str, post_index: int, post_text: str):
+    """Logs an automated channel post in the database."""
+    db = get_db()
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    await db.execute("""
+        INSERT INTO channel_post_log (channel_id, content_type, post_index, post_text, posted_at)
+        VALUES (?, ?, ?, ?, ?)
+    """, (channel_id, content_type, post_index, post_text, now_str))
+    await db.commit()
+    logger.info(f"Logged channel post for channel '{channel_id}' with index {post_index}.")
+
+async def get_last_post_index(channel_id: str) -> int:
+    """Retrieves the index of the last posted content type for a given channel. Returns -1 if none exist."""
+    db = get_db()
+    async with db.execute("""
+        SELECT post_index FROM channel_post_log
+        WHERE channel_id = ?
+        ORDER BY id DESC LIMIT 1
+    """, (channel_id,)) as cursor:
+        row = await cursor.fetchone()
+        if row:
+            return row[0]
+    return -1
+
+async def log_manager_message(session_name: str, target_user_id: int, step: int):
+    """Logs an outgoing or first-contact message sent by a Telethon manager account."""
+    db = get_db()
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    await db.execute("""
+        INSERT INTO manager_messages (session_name, target_user_id, step, sent_at, replied)
+        VALUES (?, ?, ?, ?, 0)
+    """, (session_name, target_user_id, step, now_str))
+    await db.commit()
+    logger.info(f"Logged manager message from session '{session_name}' to user {target_user_id} (Step {step}).")
+
+async def get_pending_followups(session_name: str, step: int, hours_since: float) -> list[int]:
+    """
+    Retrieves a list of target user IDs who received message at `step` from `session_name`
+    at least `hours_since` ago, and have not yet replied or been sent a higher step.
+    """
+    db = get_db()
+    db.row_factory = aiosqlite.Row
+    async with db.execute("""
+        SELECT m1.target_user_id 
+        FROM manager_messages m1
+        WHERE m1.session_name = ? 
+          AND m1.step = ? 
+          AND m1.replied = 0
+          AND (julianday('now') - julianday(m1.sent_at)) * 24 >= ?
+          AND NOT EXISTS (
+              SELECT 1 FROM manager_messages m2
+              WHERE m2.session_name = m1.session_name 
+                AND m2.target_user_id = m1.target_user_id 
+                AND m2.step > m1.step
+          )
+    """, (session_name, step, hours_since)) as cursor:
+        rows = await cursor.fetchall()
+        return [row["target_user_id"] for row in rows]
+
+async def mark_replied(session_name: str, target_user_id: int):
+    """Marks all messages for a specific user and session as replied, halting followups."""
+    db = get_db()
+    await db.execute("""
+        UPDATE manager_messages
+        SET replied = 1
+        WHERE session_name = ? AND target_user_id = ?
+    """, (session_name, target_user_id))
+    await db.commit()
+    logger.info(f"Marked user {target_user_id} as replied for manager session '{session_name}'.")
+
