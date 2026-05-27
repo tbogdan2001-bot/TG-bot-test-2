@@ -128,7 +128,7 @@ def check_and_interactive_config():
                 f.write(f"ADMIN_ID={admin_id}\n")
                 f.write(f"CLOSER_NOTIFY_CHAT_ID={closer_chat}\n")
                 f.write("CHANNEL_ID=-1002222222222\n")
-                f.write("CHANNEL_LINK=https://t.me/crypto_inside_channel\n")
+                f.write("CHANNEL_LINK=https://t.me/+Ciz3NPZiQ88yMGVh\n")
                 f.write("CHANNEL_NAME=Crypto Inside 📈\n")
                 f.write(f"GEMINI_API_KEY={gemini_key}\n")
                 f.write(f"TELEGRAM_API_ID={api_id}\n")
@@ -149,7 +149,7 @@ check_and_interactive_config()
 # 1. Telegram Connection Configuration
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "")          # Default channel backup
-CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/example_channel")
+CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/+Ciz3NPZiQ88yMGVh")
 CHANNEL_NAME = os.getenv("CHANNEL_NAME", "Crypto Inside 📈")
 admin_id_raw = os.getenv("ADMIN_ID", "0")
 ADMIN_ID = int(admin_id_raw) if admin_id_raw.isdigit() else 0
