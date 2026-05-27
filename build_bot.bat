@@ -16,7 +16,7 @@ pip install -r requirements.txt pyinstaller
 echo.
 
 echo [2/4] Компиляция проекта в один .exe файл...
-pyinstaller --onefile --console --name="telegram_funnel_bot" --hidden-import="aiogram" --hidden-import="aiogram.dispatcher" --hidden-import="aiogram.filters" --hidden-import="aiogram.fsm.storage.memory" --hidden-import="aiogram.types" --hidden-import="aiosqlite" --hidden-import="apscheduler" --hidden-import="apscheduler.schedulers.asyncio" --hidden-import="apscheduler.triggers.cron" --hidden-import="apscheduler.triggers.interval" --hidden-import="apscheduler.triggers.date" --hidden-import="telethon" --hidden-import="telethon.crypto" --hidden-import="telethon.extensions" --hidden-import="google.generativeai" --hidden-import="google.protobuf" --hidden-import="google.protobuf.descriptor" --hidden-import="google.protobuf.message" --hidden-import="google.protobuf.pyext._message" main.py
+python -m PyInstaller --onefile --console --name="telegram_funnel_bot" --hidden-import="aiogram" --hidden-import="aiogram.dispatcher" --hidden-import="aiogram.filters" --hidden-import="aiogram.fsm.storage.memory" --hidden-import="aiogram.types" --hidden-import="aiosqlite" --hidden-import="apscheduler" --hidden-import="apscheduler.schedulers.asyncio" --hidden-import="apscheduler.triggers.cron" --hidden-import="apscheduler.triggers.interval" --hidden-import="apscheduler.triggers.date" --hidden-import="telethon" --hidden-import="telethon.crypto" --hidden-import="telethon.extensions" --hidden-import="google.generativeai" --hidden-import="google.protobuf" --hidden-import="google.protobuf.descriptor" --hidden-import="google.protobuf.message" --hidden-import="google.protobuf.pyext._message" main.py
 echo.
 
 echo [3/4] Копирование конфигурационного файла .env в папку сборки...
