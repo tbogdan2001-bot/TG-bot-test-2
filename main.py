@@ -21,7 +21,7 @@ from datetime import datetime
 import os
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command, CommandObject
-from aiogram.types import Message, CallbackQuery, InputMediaPhoto, ChatMemberUpdated, MessageReactionUpdated
+from aiogram.types import Message, CallbackQuery, InputMediaPhoto, ChatMemberUpdated, MessageReactionUpdated, ErrorEvent
 
 import config
 import database
@@ -88,8 +88,8 @@ async def on_shutdown():
 
 # Global error handler decorator
 @dp.errors()
-async def global_error_handler(event, exception):
-    logger.error(f"Unhandled exception: {exception}", exc_info=True)
+async def global_error_handler(event: ErrorEvent):
+    logger.error(f"Unhandled exception: {event.exception}", exc_info=True)
     return True
 
 # -------------------------------------------------------------
@@ -190,7 +190,7 @@ async def cmd_start(message: Message, command: CommandObject = None):
     kb = keyboards.get_q1_keyboard()
     
     # Retrieve step 1 photo directly from assigned persona assets
-    welcome_photo = persona["images"].get("image_1", config.IMAGE_1)
+    welcome_photo = persona["images"].get("image_1")
     
     # Send welcome photo (or text if photo fails or is not provided)
     if welcome_photo:
@@ -425,7 +425,7 @@ async def handle_q3_selection(callback: CallbackQuery):
     kb = keyboards.get_subscribe_keyboard(channel_link)
     
     # Retrieve image_2 (subscribe prompt photo)
-    image_2 = persona["images"].get("image_2", config.IMAGE_2)
+    image_2 = persona["images"].get("image_2")
     
     try:
         await callback.message.edit_media(

@@ -130,7 +130,7 @@ async def send_subscription_nudge(bot: Bot, user_id: int):
     
     # Resolve assigned persona profile to pull customized nudge graphics (image_2)
     persona = config.get_persona_for_user(user)
-    nudge_photo = persona["images"].get("image_2", config.IMAGE_2)
+    nudge_photo = persona["images"].get("image_2")
     
     await safe_send(bot, user_id, config.NUDGE_TEXT, photo=nudge_photo, kb=kb)
     logger.info(f"Nudge task executed for user {user_id}")
@@ -438,7 +438,7 @@ async def transition_to_step_4(bot: Bot, user_id: int):
     congrats_text = f"{config.STEP_4_CONGRATS_TEXT}\n\n{bonus_text}"
     
     # Congratulations / bonus reveal photo (image_4)
-    congrats_photo = persona["images"].get("image_4", config.IMAGE_4)
+    congrats_photo = persona["images"].get("image_4")
     
     # Deliver the bonus
     await safe_send(bot, user_id, congrats_text, photo=congrats_photo)
