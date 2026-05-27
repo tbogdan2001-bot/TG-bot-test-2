@@ -46,6 +46,9 @@ if not config.BOT_TOKEN:
 bot = Bot(token=config.BOT_TOKEN)
 dp = Dispatcher()
 
+# Support @router decorator as requested in Feature 1
+router = dp
+
 # In-memory rate limiting dictionary for /start command
 last_start_times = {}
 
@@ -222,15 +225,15 @@ async def cmd_admin(message: Message):
         f"📈 Конверсия (старт→бонус): {stats['conversion']:.1f}%"
     )
     
-    # Fetch Multi-Group Manager Assignments mapping (Feature 2)
+    # FEATURE 4: Fetch Multi-Group Manager Assignments mapping
     mapping = await database.get_manager_assignments_mapping()
-    mapping_text = "\n\n💼 **Назначение менеджеров по группам (Rotation):**\n"
+    mapping_text = "\n\n👥 Менеджеры → Группы:\n"
     for session, groups in mapping.items():
-        mapping_text += f"  👤 `{session}`:\n"
         if not groups:
-            mapping_text += "    (Нет привязанных групп)\n"
-        for g in groups:
-            mapping_text += f"    🔹 {g['name']} (`{g['group_id']}`)\n"
+            mapping_text += f"• {session}: —\n"
+        else:
+            group_names = ", ".join([g["name"] for g in groups])
+            mapping_text += f"• {session}: {group_names}\n"
             
     text += mapping_text
     await message.answer(text, parse_mode="Markdown")
@@ -301,14 +304,15 @@ async def cmd_admin_full(message: Message):
         "❄️ **Удержание (Retention & Pressure Status):**\n"
         f"  🟢 Активные (active): {stats['statuses'].get('active', 0)}\n"
         f"  🔵 Холодные (cold): {stats['statuses'].get('cold', 0)}\n"
-        f"  🟠 В дожиме (pressure): {stats['statuses'].get('pressure', 0)}\n"
-        f"  ⚫ Потерянные (lost): {stats['statuses'].get('lost', 0)}\n"
         f"  🔴 Заблокировали бота: {stats['statuses'].get('blocked', 0)}\n\n"
-        "📈 **Вовлеченность (Engagement & ERR):**\n"
-        f"  🔹 Всего отправлено сообщений: {stats['messages_sent']}\n"
-        f"  🔹 Всего реакций получено: {stats['reactions_received']}\n"
-        f"  🔹 Всего ответов получено: {stats['replies_received']}\n"
-        f"  🔹 ERR (Engagement Rate Ratio): {stats['err']:.2f}%\n\n"
+        "📊 ERR Аналитика:\n"
+        f"• Сообщений отправлено: {stats['messages_sent']}\n"
+        f"• Реакций получено: {stats['reactions_received']}\n"
+        f"• Ответов получено: {stats['replies_received']}\n"
+        f"• ERR: {stats['err']:.1f}%\n\n"
+        "🔥 Дожим (Pressure Funnel):\n"
+        f"• В дожиме: {stats['statuses'].get('pressure', 0)}\n"
+        f"• Потеряно: {stats['statuses'].get('lost', 0)}\n\n"
         f"📈 **Конверсия (Старт → Бонус):** {stats['conversion']:.1f}%"
     )
     
@@ -520,43 +524,54 @@ async def handle_bonus_selection(callback: CallbackQuery):
 @dp.my_chat_member()
 async def on_my_chat_member_update(update: ChatMemberUpdated):
     """Listens for block and unblock events to track subscribe/unsubscribe statuses."""
-    user_id = update.from_user.id
-    new_status = update.new_chat_member.status
-    if new_status == "kicked":
-        logger.info(f"User {user_id} blocked the bot (unsubscribe event).")
-        await database.set_user_blocked(user_id, True)
-        await database.set_user_subscription(user_id, False)
-    elif new_status == "member":
-        logger.info(f"User {user_id} unblocked the bot (subscribe event).")
-        await database.set_user_blocked(user_id, False)
+    try:
+        user_id = update.from_user.id
+        new_status = update.new_chat_member.status
+        if new_status == "kicked":
+            logger.info(f"User {user_id} blocked the bot (unsubscribe event).")
+            await database.set_user_blocked(user_id, True)
+            await database.set_user_subscription(user_id, False)
+        elif new_status == "member":
+            logger.info(f"User {user_id} unblocked the bot (subscribe event).")
+            await database.set_user_blocked(user_id, False)
+    except Exception as e:
+        logger.error(f"Error handling chat member update: {e}", exc_info=True)
 
-@dp.message_reaction()
+# FEATURE 1: MessageReactionUpdated registered via @router
+@router.message_reaction()
 async def handle_message_reaction(event: MessageReactionUpdated):
     """Listens to message reaction additions/removals in real-time to compute the ERR."""
-    user_id = event.chat.id
-    old_count = len(event.old_reaction)
-    new_count = len(event.new_reaction)
-    diff = new_count - old_count
-    
-    if diff != 0:
-        await database.update_user_reactions(user_id, diff)
-        logger.info(f"User {user_id} modified their reaction. Old count: {old_count}, new count: {new_count}. Diff: {diff}")
+    try:
+        user_id = event.chat.id
+        old_reactions = event.old_reaction or []
+        new_reactions = event.new_reaction or []
+        diff = len(new_reactions) - len(old_reactions)
+        
+        if diff != 0:
+            await database.update_user_reactions(user_id, diff)
+            logger.info(f"User {user_id} modified their reaction. Old count: {len(old_reactions)}, new count: {len(new_reactions)}. Diff: {diff}")
+    except Exception as e:
+        logger.error(f"Error in message reaction tracking: {e}", exc_info=True)
 
+# FEATURE 1: Catch-all handler for replies
 @dp.message()
 async def handle_user_message(message: Message):
-    """Catch-all message handler to register user replies and reset pressure/cold statuses."""
-    # Ignore bot commands
-    if message.text and message.text.startswith("/"):
-        return
+    """Catch-all message handler to register user replies and count replies for ERR."""
+    try:
+        # Ignore bot commands
+        if message.text and message.text.startswith("/"):
+            return
+            
+        user_id = message.from_user.id
+        logger.info(f"Received reply from user {user_id}: {message.text or 'non-text message'}")
         
-    user_id = message.from_user.id
-    logger.info(f"Received reply from user {user_id}: {message.text}")
-    
-    # Reset pressure/cold statuses and cancel outstanding pressure jobs
-    await scheduler.handle_user_activity(bot, user_id)
-    
-    # Increment replies counter in SQLite
-    await database.increment_user_replies(user_id)
+        # Reset pressure/cold statuses and cancel outstanding pressure jobs
+        await scheduler.handle_user_activity(bot, user_id)
+        
+        # Increment replies counter in SQLite
+        await database.increment_user_replies(user_id)
+    except Exception as e:
+        logger.error(f"Error in handle_user_message reply tracking: {e}", exc_info=True)
 
 # -------------------------------------------------------------
 # MAIN STARTUP FUNCTION

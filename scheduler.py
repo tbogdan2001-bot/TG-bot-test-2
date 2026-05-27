@@ -7,6 +7,7 @@
 # - Updated restore_scheduled_jobs() startup recovery to handle both stage 4 and stage 5
 # - Added functions for ERR analytics (messages_sent tracking, unsubscription on bot block)
 # - Added Feature 1: Pressure Lead Funnel ("Дожим") triggers, APscheduler jobs, and recovery
+# - Refactored check_inactive_leads and its registration to run as a daily cron job at 10:00 UTC.
 
 from datetime import datetime, timedelta
 import logging
@@ -546,23 +547,17 @@ def schedule_pressure_sequence(bot: Bot, user_id: int):
         )
         logger.info(f"Scheduled pressure message #{i} (stage {seq['stage']}) for user {user_id} at {run_time} (ID: {job_id})")
 
+# FEATURE 3: Exact requested check_inactive_leads implementation
 async def check_inactive_leads(bot: Bot):
     """
-    Daily cron job running every 24 hours.
-    Scans for cold/inactive leads and triggers start_pressure_funnel() for them.
+    Daily cron: finds cold/inactive users (stage 2/3, no activity 3+ days)
+    and starts pressure funnel for each eligible user.
     """
-    logger.info("Running daily check_inactive_leads cron check...")
-    inactive_user_ids = await database.get_inactive_leads_for_pressure()
-    
-    triggered_count = 0
-    for u_id in inactive_user_ids:
-        try:
-            await start_pressure_funnel(bot, u_id)
-            triggered_count += 1
-        except Exception as e:
-            logger.error(f"Failed to start pressure funnel for user {u_id}: {e}")
-            
-    logger.info(f"check_inactive_leads completed. Triggered pressure funnel for {triggered_count} users.")
+    user_ids = await database.get_inactive_leads_for_pressure()
+    logger.info(f"Daily inactive leads check: found {len(user_ids)} users to pressure.")
+    for user_id in user_ids:
+        logger.info(f"Starting pressure funnel for inactive user {user_id}")
+        await start_pressure_funnel(bot, user_id)
 
 async def handle_user_activity(bot: Bot, user_id: int):
     """Resets user status from 'pressure', 'cold', or 'lost' to 'active' on new activity, and cancels outstanding pressure jobs."""
@@ -708,12 +703,23 @@ async def restore_scheduled_jobs(bot: Bot):
                             replace_existing=True
                         )
                         restored_count += 1
-                        
+
+    # FEATURE 3: Register daily cron at 10:00 UTC
+    scheduler.add_job(
+        check_inactive_leads,
+        trigger="cron",
+        hour=10,
+        minute=0,
+        args=[bot],
+        id="check_inactive_leads_daily",
+        replace_existing=True
+    )
+    logger.info("Daily inactive leads check scheduled successfully at 10:00 UTC.")
     logger.info(f"Startup recovery completed. Restored {restored_count} active jobs.")
 
 # NEW: Added auto-posting and manager scheduler task registration on startup
 async def start_scheduler_tasks(bot: Bot):
-    """Starts the Telethon userbots and registers auto-posting, check_inactive_leads, and follow-up periodic jobs."""
+    """Starts the Telethon userbots and registers auto-posting, and follow-up periodic jobs."""
     import autoposter
     import accounts
     
@@ -726,16 +732,4 @@ async def start_scheduler_tasks(bot: Bot):
     # 3. Register manager followup periodic checking loop
     accounts.schedule_manager_loops()
     
-    # 4. Register daily re-engagement check_inactive_leads cron running every 24h
-    job_id = "check_inactive_leads_daily"
-    scheduler.add_job(
-        check_inactive_leads,
-        trigger="interval",
-        hours=24,
-        args=[bot],
-        id=job_id,
-        replace_existing=True
-    )
-    logger.info(f"Scheduled check_inactive_leads daily interval job (ID: {job_id})")
-    
-    logger.info("Auto-posting, check_inactive_leads, and userbot check loops registered successfully.")
+    logger.info("Auto-posting and userbot check loops registered successfully.")
