@@ -7,6 +7,9 @@ echo   СТАРТ СБОРКИ TELEGRAM-БОТА В .EXE ФАЙЛ
 echo ===================================================
 echo.
 
+# Bypassing Rust build version check for Python 3.14 Compatibility
+set PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
+
 echo [1/4] Установка PyInstaller и зависимостей...
 python -m pip install --upgrade pip
 pip install -r requirements.txt pyinstaller
