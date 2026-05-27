@@ -4,6 +4,9 @@
 # - Added PRIVATE_CLUB_LINK environment variable fallback
 # - Added DARK_CTA_CAPTION closing text template
 # - Implemented get_personalized_bonus() to dynamically map quiz answer combinations to appropriate bonuses
+# - Extended FOLLOW_UP_DELAYS for Day 4 and Day 5 pressure funnel re-engagement without breaking indices
+# - Added MANAGER_GROUPS for Multi-Group Manager Rotation support
+# - Added PRESSURE_PLAN containing 5 messages over 5 days for re-engaging inactive leads
 
 import os
 from dotenv import load_dotenv
@@ -160,12 +163,13 @@ def get_personalized_bonus(persona_id: str, q1: str, q2: str, q3: str) -> str:
         else:
             return "bonus_roi"
 
-
 # Delays in minutes
 # FOLLOW_UP_DELAYS[0] is the subscription nudge check (Step 2b) (e.g. 30 mins)
 # FOLLOW_UP_DELAYS[1:5] are the main content plan stages (e.g. 1h, 24h, 48h, 72h)
 # FOLLOW_UP_DELAYS[5:8] are the long-term retention stages (e.g. Day 7, Day 14, Day 30)
-FOLLOW_UP_DELAYS = [30, 60, 1440, 2880, 4320, 10080, 20160, 43200]
+# FOLLOW_UP_DELAYS[8:10] are the new Day 4 and Day 5 pressure funnel stages (5760 and 7200 minutes)
+# Append new delays to keep all existing indices fully compatible.
+FOLLOW_UP_DELAYS = [30, 60, 1440, 2880, 4320, 10080, 20160, 43200, 5760, 7200]
 
 # 4. Core Funnel Texts (Allows full translation/modification of messages)
 WELCOME_TEXT = (
@@ -207,7 +211,6 @@ DARK_CTA_CAPTION = (
     "3️⃣ Прямой доступ к сильному окружению и единомышленникам\n\n"
     "👇 Нажмите кнопку ниже прямо сейчас, чтобы занять свое место в клубе совершенно бесплатно!"
 )
-
 
 # Extended Warm-up Sequence Content Plan Supporting 8 Message Types
 CONTENT_PLAN = [
@@ -263,7 +266,6 @@ CONTENT_PLAN = [
     }
 ]
 
-
 # Retention Sequence Configurations for Long-Term Engagement
 RETENTION_PLAN = [
     {
@@ -294,16 +296,14 @@ RETENTION_PLAN = [
         "delay_index": 7,  # FOLLOW_UP_DELAYS[7] = 43200 minutes (Day 30)
         "text": (
             "🔥 **ПОСЛЕДНИЙ ШАНС ДЛЯ ВАС**\n\n"
-            "Это {persona_name}. Я закрываю набор на индивидуальное наставничество по {niche}. "
-            "Осталось последнее свободное место со скидкой 50%.\n\n"
-            "Если вы хотите начать зарабатывать под моим руководством — нажимайте кнопку ниже прямо сейчас! 👇"
+            "Это {persona_name}. Я закрываю набор на индивидуальное наставничество по {niche}.\n\n"
+            "Осталось последнее свободное место со скидкой 50%. Если вы хотите начать зарабатывать под моим руководством — нажимайте кнопку ниже прямо сейчас! 👇"
         ),
         "keyboard": [
             [{"text": "📥 Занять место", "url": "https://t.me/example_closer_username"}]
         ]
     }
 ]
-
 
 # ==============================================================================
 # NEW: AI CONTENT & AUTOPOSTING & MULTI-ACCOUNT MANAGER SYSTEM CONFIGURATION
@@ -323,8 +323,82 @@ MANAGER_ACCOUNTS = [
     {
         "session": "manager_1",
         "persona_id": "alexander",  # must match a key in PERSONAS dict
-        "groups": [],  # fill with @group_usernames
+        "groups": [],  # dynamically monitored from database mapping
         "phone": os.getenv("MANAGER_1_PHONE", "")
+    }
+]
+
+# MANAGER_GROUPS configuration list for Feature 3 manager rotation
+MANAGER_GROUPS = [
+    {"group_id": "-1002222222222", "name": "Crypto Discussion 💬"},
+    {"group_id": "-1003333333333", "name": "Estate Talk 🏢"},
+    {"group_id": "-1004444444444", "name": "Arbitrage Club 📈"}
+]
+
+# Pressure Sequence (Дожим) for cold/inactive leads
+PRESSURE_PLAN = [
+    {
+        "stage": 1,
+        "delay_index": 2,  # FOLLOW_UP_DELAYS[2] = 1440 minutes (Day 1)
+        "type": "hook",
+        "text": (
+            "🎯 **{persona_name} // КОЕ-ЧТО ИНТЕРЕСНОЕ ДЛЯ ВАС**\n\n"
+            "Привет! Я заметил, что вы интересовались темой **{niche}**, но так и не решились сделать первый шаг. "
+            "Почему большинство людей так и остаются на месте? Из-за страха неизвестности.\n\n"
+            "Я подготовил для вас небольшую инсайдерскую информацию, которая развеет все сомнения. Интересно? 😉"
+        ),
+        "image": "https://images.unsplash.com/photo-1522071820081-009f0129c71c?w=1080"
+    },
+    {
+        "stage": 2,
+        "delay_index": 3,  # FOLLOW_UP_DELAYS[3] = 2880 minutes (Day 2)
+        "type": "social_proof",
+        "text": (
+            "📈 **РЕЗУЛЬТАТЫ НАШИХ УЧАСТНИКОВ**\n\n"
+            "Посмотрите на результаты одного из наших учеников в сфере **{niche}**!\n\n"
+            "Он тоже начинал с нуля, сомневался и откладывал на потом. Но применив мою пошаговую систему, "
+            "он заработал первые деньги уже через неделю! Никакой магии — чистая математика и алгоритмы."
+        ),
+        "image": "https://images.unsplash.com/photo-1551836022-d5d88e9218df?w=1080"
+    },
+    {
+        "stage": 3,
+        "delay_index": 4,  # FOLLOW_UP_DELAYS[4] = 4320 minutes (Day 3)
+        "type": "urgency",
+        "text": (
+            "⏳ **ВРЕМЯ УХОДИТ!**\n\n"
+            "Бронь на ваше специальное предложение по {niche} сгорает.\n\n"
+            "Количество мест в закрытой группе ограничено, и я физически не смогу "
+            "держать место для вас дольше. Не упустите свой шанс начать зарабатывать на лучших условиях!"
+        ),
+        "image": "https://images.unsplash.com/photo-1508962914676-134849a727f0?w=1080"
+    },
+    {
+        "stage": 4,
+        "delay_index": 8,  # FOLLOW_UP_DELAYS[8] = 5760 minutes (Day 4)
+        "type": "direct_offer",
+        "text": (
+            "🔥 **СПЕЦИАЛЬНОЕ ПРЕДЛОЖЕНИЕ ДЛЯ ВАС**\n\n"
+            "Хватит сомневаться и откладывать жизнь на завтра! "
+            "Вот ваша персональная ссылка на вступление в наше приватное сообщество по **{niche}**.\n\n"
+            "Нажимайте на кнопку ниже прямо сейчас, забирайте свою скидку и занимайте место! 👇"
+        ),
+        "image": "https://images.unsplash.com/photo-1553729459-beb747028b4e?w=1080",
+        "keyboard": [
+            [{"text": "📥 Вступить по спец. условиям", "url": "https://t.me/example_closer_username"}]
+        ]
+    },
+    {
+        "stage": 5,
+        "delay_index": 9,  # FOLLOW_UP_DELAYS[9] = 7200 minutes (Day 5)
+        "type": "breakup",
+        "text": (
+            "💔 **ФИНАЛЬНОЕ УВЕДОМЛЕНИЕ // {persona_name}**\n\n"
+            "Похоже, сфера {niche} сейчас вас не интересует. Это абсолютно нормально, у каждого свои приоритеты.\n\n"
+            "Я удаляю вашу бронь. Это мое последнее сообщение вам. "
+            "Если вы всё же решите изменить свою жизнь — вы знаете, где меня найти. Удачи!"
+        ),
+        "image": "https://images.unsplash.com/photo-1516321318423-f06f85e504b3?w=1080"
     }
 ]
 

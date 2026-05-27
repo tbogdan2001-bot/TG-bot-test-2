@@ -3,6 +3,7 @@
 # Automates first-contact private messages to new group members,
 # tracks conversation replies to automatically halt re-engagement,
 # and runs a scheduled background checker to deliver Day 1, 3, 5 follow-ups.
+# - Extended to support Multi-Group Manager Rotation (Feature 3) using SQLite-backed round-robin rotation.
 
 import asyncio
 import logging
@@ -18,6 +19,82 @@ logger = logging.getLogger(__name__)
 
 # Registry for authorized running Telethon clients (session_name -> TelegramClient)
 active_clients = {}
+
+async def is_group_assigned_to_manager(session_name: str, chat_id: int, chat_username: str = None) -> bool:
+    """Helper to check if a group is assigned to a manager session in database."""
+    assigned_groups = await database.get_assigned_groups_for_manager(session_name)
+    chat_id_str = str(chat_id)
+    alt_chat_id_str = chat_id_str
+    if chat_id_str.startswith("-100"):
+        alt_chat_id_str = chat_id_str[4:]
+    elif not chat_id_str.startswith("-"):
+        alt_chat_id_str = f"-100{chat_id_str}"
+        
+    for g_id in assigned_groups:
+        g_id_str = str(g_id)
+        if g_id_str == chat_id_str or g_id_str == alt_chat_id_str:
+            return True
+        if chat_username and g_id_str.lower() == chat_username.lower():
+            return True
+    return False
+
+async def assign_groups_to_managers():
+    """
+    Ensures all groups in config.MANAGER_GROUPS are assigned to a manager session.
+    Implements round-robin assignment targeting session with fewest assignments (max 3).
+    """
+    db = database.get_db()
+    
+    # 1. Fetch current assignments
+    async with db.execute("SELECT session_name, group_id FROM manager_assignments") as cursor:
+        rows = await cursor.fetchall()
+        existing_assignments = {row[1]: row[0] for row in rows} # group_id -> session_name
+        
+    # 2. Identify sessions from config
+    sessions = [mgr["session"] for mgr in config.MANAGER_ACCOUNTS]
+    if not sessions:
+        logger.warning("No manager accounts configured in config.MANAGER_ACCOUNTS.")
+        return
+        
+    # 3. For each group in config.MANAGER_GROUPS
+    for group in config.MANAGER_GROUPS:
+        group_id = str(group["group_id"])
+        
+        # Check if already assigned
+        if group_id in existing_assignments:
+            # Check if the assigned session is still in config
+            if existing_assignments[group_id] in sessions:
+                continue
+            else:
+                # Assigned manager no longer exists in config, delete assignment so it can be reassigned
+                await db.execute("DELETE FROM manager_assignments WHERE group_id = ?", (group_id,))
+                await db.commit()
+                
+        # Needs assignment! Find session with fewest assignments (max 3)
+        session_counts = {}
+        for s in sessions:
+            # Count current assignments in database
+            async with db.execute("SELECT COUNT(*) FROM manager_assignments WHERE session_name = ?", (s,)) as c:
+                count = (await c.fetchone())[0] or 0
+                session_counts[s] = count
+                
+        # Filter sessions with < 3 assignments
+        eligible_sessions = {s: count for s, count in session_counts.items() if count < 3}
+        if not eligible_sessions:
+            logger.error(f"Cannot assign group {group_id} ({group['name']}): all managers have reached the max of 3 assignments.")
+            continue
+            
+        # Pick the one with the fewest assignments
+        assigned_session = min(eligible_sessions, key=eligible_sessions.get)
+        
+        # Insert assignment
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        await db.execute("""
+            INSERT OR REPLACE INTO manager_assignments (session_name, group_id, assigned_at)
+            VALUES (?, ?, ?)
+        """, (assigned_session, group_id, now_str))
+        await db.commit()
+        logger.info(f"Assigned group {group_id} ({group['name']}) to manager session '{assigned_session}' (assignments count: {eligible_sessions[assigned_session] + 1})")
 
 async def register_chat_event_listeners(session_name: str, client: TelegramClient, mgr_cfg: dict):
     """Registers real-time join events and incoming reply listeners for a userbot client."""
@@ -36,17 +113,9 @@ async def register_chat_event_listeners(session_name: str, client: TelegramClien
                 # Retrieve chat entity to resolve group name
                 chat = await event.get_chat()
                 chat_username = f"@{chat.username}" if getattr(chat, "username", None) else None
-                chat_id_str = str(chat.id)
                 
-                # Check if this group matches the managed groups (by username, ID, or link)
-                monitored_groups = [g.lower() for g in mgr_cfg.get("groups", [])]
-                is_monitored = False
-                
-                if chat_username and chat_username.lower() in monitored_groups:
-                    is_monitored = True
-                elif chat_id_str in monitored_groups:
-                    is_monitored = True
-                    
+                # Check if this group is assigned to this manager session in SQLite (Feature 2 Rotation)
+                is_monitored = await is_group_assigned_to_manager(session_name, chat.id, chat_username)
                 if not is_monitored:
                     return
                 
@@ -161,6 +230,9 @@ async def start_manager_accounts():
         logger.warning("TELEGRAM_API_ID or TELEGRAM_API_HASH is not set. Skipping Multi-Account userbots.")
         return
         
+    # Ensure Multi-Group Manager Assignments are populated (Feature 2 Rotation)
+    await assign_groups_to_managers()
+    
     logger.info("Initializing multi-account manager userbots...")
     
     for mgr in config.MANAGER_ACCOUNTS:

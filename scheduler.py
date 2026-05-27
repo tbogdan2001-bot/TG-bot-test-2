@@ -5,6 +5,8 @@
 # - Rewrote transition_to_step_4() to auto-resolve personalized bonuses, deliver them with image_4,
 #   advance stage to 5, and immediately send the final dark-themed CTA card with image_5
 # - Updated restore_scheduled_jobs() startup recovery to handle both stage 4 and stage 5
+# - Added functions for ERR analytics (messages_sent tracking, unsubscription on bot block)
+# - Added Feature 1: Pressure Lead Funnel ("Дожим") triggers, APscheduler jobs, and recovery
 
 from datetime import datetime, timedelta
 import logging
@@ -26,7 +28,7 @@ async def safe_send(bot: Bot, user_id: int, text: str, photo: str = None, kb = N
     """
     Safely sends a text or photo message to a user.
     If photo sending fails, automatically falls back to sending text.
-    If the user has blocked the bot, marks the user as blocked in the database and returns False.
+    If the user has blocked the bot, marks the user as blocked and unsubscribed in the database and returns False.
     Returns True if successfully sent.
     """
     try:
@@ -41,8 +43,9 @@ async def safe_send(bot: Bot, user_id: int, text: str, photo: str = None, kb = N
                 )
                 return True
             except TelegramForbiddenError:
-                logger.warning(f"User {user_id} blocked the bot on sending photo. Marking as blocked.")
+                logger.warning(f"User {user_id} blocked the bot on sending photo. Marking as blocked & unsubscribed.")
                 await database.set_user_blocked(user_id, True)
+                await database.set_user_subscription(user_id, False)
                 return False
             except Exception as photo_err:
                 logger.error(f"Failed to send photo to {user_id}: {photo_err}, falling back to text only.")
@@ -56,8 +59,9 @@ async def safe_send(bot: Bot, user_id: int, text: str, photo: str = None, kb = N
         )
         return True
     except TelegramForbiddenError:
-        logger.warning(f"User {user_id} blocked the bot on sending message. Marking as blocked.")
+        logger.warning(f"User {user_id} blocked the bot on sending message. Marking as blocked & unsubscribed.")
         await database.set_user_blocked(user_id, True)
+        await database.set_user_subscription(user_id, False)
         return False
     except Exception as e:
         logger.error(f"Failed to send message to user {user_id}: {e}", exc_info=True)
@@ -166,13 +170,16 @@ async def send_warmup_message(bot: Bot, user_id: int, sequence_index: int):
     image_url = seq.get("image")
     
     # Using safe_send() utility function to send warm-up sequences safely
-    await safe_send(bot, user_id, text, photo=image_url, kb=kb)
+    sent = await safe_send(bot, user_id, text, photo=image_url, kb=kb)
+    if sent:
+        # Increment ERR messages sent counter
+        await database.increment_user_messages_sent(user_id)
     logger.info(f"Warmup task executed for user {user_id}, index {sequence_index} ({seq['type']})")
 
 async def send_retention_message(bot: Bot, user_id: int, retention_index: int):
     """
     Sends the long-term re-engagement retention messages.
-    If the user completes Day 30 without further interaction, marks their status as 'cold'.
+    If the user completes Day 30 without further interaction, marks their status as 'cold' and triggers pressure.
     """
     user = await database.get_user(user_id)
     if not user or user.get("is_blocked") or user.get("status") != "active":
@@ -201,14 +208,18 @@ async def send_retention_message(bot: Bot, user_id: int, retention_index: int):
     sent = await safe_send(bot, user_id, text, photo=image_url, kb=kb)
     
     if sent:
+        # Increment ERR messages sent counter
+        await database.increment_user_messages_sent(user_id)
+        
         # Increment user retention stage in SQLite
         stage_num = ret["stage"]
         await database.set_user_retention_stage(user_id, stage_num)
         
-        # If this is the final retention check (Day 30), mark the user as 'cold'
+        # If this is the final retention check (Day 30), mark the user as 'cold' and start the pressure lead funnel
         if retention_index == len(config.RETENTION_PLAN) - 1:
             await database.set_user_status(user_id, "cold")
-            logger.info(f"User {user_id} reached final retention step. Marked as cold.")
+            logger.info(f"User {user_id} reached final retention step. Marked as cold. Starting pressure lead funnel.")
+            await start_pressure_funnel(bot, user_id)
 
 async def notify_closer_hub(bot: Bot, user_id: int):
     """
@@ -348,7 +359,7 @@ def schedule_warmup_sequence(bot: Bot, user_id: int):
         logger.info(f"Scheduled retention re-engagement #{j} for user {user_id} at {run_time}")
 
 def cancel_active_jobs_for_user(user_id: int):
-    """Safely cancels all outstanding nudge or warm-up jobs scheduled for a user."""
+    """Safely cancels all outstanding nudge, warm-up, retention, or pressure jobs scheduled for a user."""
     # Cancel nudge job
     nudge_id = f"nudge_{user_id}"
     try:
@@ -377,6 +388,16 @@ def cancel_active_jobs_for_user(user_id: int):
                 logger.info(f"Cancelled retention job {ret_id}")
         except Exception as e:
             logger.debug(f"Failed to cancel retention job {ret_id}: {e}")
+
+    # Cancel pressure jobs (Feature 3)
+    for k in range(5):
+        pressure_id = f"pressure_{user_id}_{k}"
+        try:
+            if scheduler.get_job(pressure_id):
+                scheduler.remove_job(pressure_id)
+                logger.info(f"Cancelled pressure job {pressure_id}")
+        except Exception as e:
+            logger.debug(f"Failed to cancel pressure job {pressure_id}: {e}")
 
 # -------------------------------------------------------------
 # FUNNEL ROUTING ASSISTANT
@@ -446,6 +467,114 @@ async def transition_to_step_4(bot: Bot, user_id: int):
     logger.info(f"Successfully transitioned user {user_id} to Step 5 (Dark CTA Card delivered)")
 
 # -------------------------------------------------------------
+# FEATURE 3: PRESSURE LEAD FUNNEL ("ДОЖИМ") FUNCTIONS
+# -------------------------------------------------------------
+
+async def start_pressure_funnel(bot: Bot, user_id: int):
+    """Starts the re-engagement pressure lead funnel for a cold/inactive user."""
+    logger.info(f"Starting pressure lead funnel for user {user_id}...")
+    import datetime as dt_mod
+    now_str = dt_mod.datetime.now(dt_mod.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    await database.set_user_status(user_id, "pressure")
+    await database.set_pressure_started_at(user_id, now_str)
+    schedule_pressure_sequence(bot, user_id)
+
+async def send_pressure_message(bot: Bot, user_id: int, index: int):
+    """Sends a single scheduled pressure re-engagement message."""
+    user = await database.get_user(user_id)
+    if not user or user.get("is_blocked") or user.get("status") != "pressure":
+        logger.info(f"Skipping pressure message #{index} for user {user_id} (blocked, not in pressure status, or not found)")
+        return
+        
+    if index >= len(config.PRESSURE_PLAN):
+        return
+        
+    seq = config.PRESSURE_PLAN[index]
+    
+    # Resolve assigned marketing persona
+    persona = config.get_persona_for_user(user)
+    
+    # Format text placeholders
+    text = seq["text"].format(
+        persona_name=persona["name"],
+        niche=persona["niche"]
+    )
+    
+    kb = None
+    if "keyboard" in seq:
+        kb = keyboards.get_custom_keyboard(seq["keyboard"])
+        
+    # Resolve persona-specific image override if available (stage X -> image_X)
+    image_url = seq.get("image")
+    stage_img_key = f"image_{seq['stage']}"
+    if persona and "images" in persona and stage_img_key in persona["images"]:
+        image_url = persona["images"][stage_img_key]
+        
+    # Send message safely
+    sent = await safe_send(bot, user_id, text, photo=image_url, kb=kb)
+    
+    if sent:
+        # Increment messages_sent counter for ERR
+        await database.increment_user_messages_sent(user_id)
+        
+        # After Day 5 with no response (index == 4, i.e., final stage 5 breakup message): mark status = "lost"
+        if index == len(config.PRESSURE_PLAN) - 1:
+            await database.set_user_status(user_id, "lost")
+            logger.info(f"User {user_id} reached end of pressure funnel without responding. Marked status as 'lost'.")
+
+def schedule_pressure_sequence(bot: Bot, user_id: int):
+    """Registers all 5 pressure re-engagement jobs using APScheduler."""
+    cancel_active_jobs_for_user(user_id)
+    
+    now = datetime.now(pytz.utc)
+    for i, seq in enumerate(config.PRESSURE_PLAN):
+        delay_idx = seq["delay_index"]
+        if delay_idx >= len(config.FOLLOW_UP_DELAYS):
+            continue
+            
+        delay_minutes = config.FOLLOW_UP_DELAYS[delay_idx]
+        run_time = now + timedelta(minutes=delay_minutes)
+        
+        job_id = f"pressure_{user_id}_{i}"
+        scheduler.add_job(
+            send_pressure_message,
+            trigger="date",
+            run_date=run_time,
+            args=[bot, user_id, i],
+            id=job_id,
+            replace_existing=True
+        )
+        logger.info(f"Scheduled pressure message #{i} (stage {seq['stage']}) for user {user_id} at {run_time} (ID: {job_id})")
+
+async def check_inactive_leads(bot: Bot):
+    """
+    Daily cron job running every 24 hours.
+    Scans for cold/inactive leads and triggers start_pressure_funnel() for them.
+    """
+    logger.info("Running daily check_inactive_leads cron check...")
+    inactive_user_ids = await database.get_inactive_leads_for_pressure()
+    
+    triggered_count = 0
+    for u_id in inactive_user_ids:
+        try:
+            await start_pressure_funnel(bot, u_id)
+            triggered_count += 1
+        except Exception as e:
+            logger.error(f"Failed to start pressure funnel for user {u_id}: {e}")
+            
+    logger.info(f"check_inactive_leads completed. Triggered pressure funnel for {triggered_count} users.")
+
+async def handle_user_activity(bot: Bot, user_id: int):
+    """Resets user status from 'pressure', 'cold', or 'lost' to 'active' on new activity, and cancels outstanding pressure jobs."""
+    user = await database.get_user(user_id)
+    if user:
+        status = user.get("status")
+        if status in ["pressure", "cold", "lost"]:
+            await database.set_user_status(user_id, "active")
+            cancel_active_jobs_for_user(user_id)
+            logger.info(f"User {user_id} became active again. Cancelled pressure jobs and set status to 'active'.")
+
+# -------------------------------------------------------------
 # STARTUP RESTORATION / RECOVERY LOGIC
 # -------------------------------------------------------------
 
@@ -465,8 +594,8 @@ async def restore_scheduled_jobs(bot: Bot):
         is_blocked = u.get("is_blocked", 0)
         status_name = u.get("status", "active")
         
-        # Skip restoring jobs for blocked or cold users
-        if is_blocked or status_name != "active":
+        # Skip restoring jobs for blocked or lost/inactive users unless they are in pressure state!
+        if is_blocked or status_name == "blocked":
             continue
             
         # Parse their join date (дата_входа)
@@ -478,81 +607,113 @@ async def restore_scheduled_jobs(bot: Bot):
             logger.error(f"Error parsing join date for user {user_id}: {date_err}")
             continue
             
-        if stage == 2:
-            # User is prompted to subscribe, they need a subscription check nudge.
-            # Calculate when the nudge should run
-            delay_minutes = config.FOLLOW_UP_DELAYS[0]
-            nudge_time = join_dt + timedelta(minutes=delay_minutes)
-            
-            if nudge_time > now_utc:
-                # Schedule nudge for the remaining time
-                scheduler.add_job(
-                    send_subscription_nudge,
-                    trigger="date",
-                    run_date=nudge_time,
-                    args=[bot, user_id],
-                    id=f"nudge_{user_id}",
-                    replace_existing=True
-                )
-                restored_count += 1
-            else:
-                # Nudge time has passed while bot was offline. Trigger it immediately!
-                scheduler.add_job(
-                    send_subscription_nudge,
-                    trigger="date",
-                    run_date=now_utc + timedelta(seconds=5), # 5 seconds delay to allow bot startup
-                    args=[bot, user_id],
-                    id=f"nudge_{user_id}",
-                    replace_existing=True
-                )
-                restored_count += 1
+        if status_name == "pressure":
+            # Reschedule remaining pressure messages relative to pressure_started_at
+            pressure_start_str = u.get("pressure_started_at")
+            if not pressure_start_str:
+                pressure_start_str = u["дата_входа"]
                 
-        # CHANGED: Allow stage 4 and stage 5
-        elif stage in [4, 5]:
-            # User has selected a bonus, and is receiving warm-ups & retentions.
-            # Schedule only warmup/content plan jobs that are still in the future!
-            for i, seq in enumerate(config.CONTENT_PLAN):
+            try:
+                pressure_dt = datetime.strptime(pressure_start_str, "%Y-%m-%d %H:%M:%S")
+                pressure_dt = pressure_dt.replace(tzinfo=pytz.utc)
+            except Exception as e:
+                logger.error(f"Error parsing pressure start date for user {user_id}: {e}")
+                continue
+                
+            for k, seq in enumerate(config.PRESSURE_PLAN):
                 delay_idx = seq["delay_index"]
                 if delay_idx >= len(config.FOLLOW_UP_DELAYS):
                     continue
                 delay_minutes = config.FOLLOW_UP_DELAYS[delay_idx]
-                warmup_time = join_dt + timedelta(minutes=delay_minutes)
+                pressure_time = pressure_dt + timedelta(minutes=delay_minutes)
                 
-                if warmup_time > now_utc:
+                if pressure_time > now_utc:
                     scheduler.add_job(
-                        send_warmup_message,
+                        send_pressure_message,
                         trigger="date",
-                        run_date=warmup_time,
-                        args=[bot, user_id, i],
-                        id=f"warmup_{user_id}_{i}",
+                        run_date=pressure_time,
+                        args=[bot, user_id, k],
+                        id=f"pressure_{user_id}_{k}",
                         replace_existing=True
                     )
                     restored_count += 1
                     
-            # Reschedule future long-term retention jobs
-            for j, ret in enumerate(config.RETENTION_PLAN):
-                delay_idx = ret["delay_index"]
-                if delay_idx >= len(config.FOLLOW_UP_DELAYS):
-                    continue
-                delay_minutes = config.FOLLOW_UP_DELAYS[delay_idx]
-                retention_time = join_dt + timedelta(minutes=delay_minutes)
+        elif status_name == "active":
+            if stage == 2:
+                # User is prompted to subscribe, they need a subscription check nudge.
+                # Calculate when the nudge should run
+                delay_minutes = config.FOLLOW_UP_DELAYS[0]
+                nudge_time = join_dt + timedelta(minutes=delay_minutes)
                 
-                if retention_time > now_utc:
+                if nudge_time > now_utc:
+                    # Schedule nudge for the remaining time
                     scheduler.add_job(
-                        send_retention_message,
+                        send_subscription_nudge,
                         trigger="date",
-                        run_date=retention_time,
-                        args=[bot, user_id, j],
-                        id=f"retention_{user_id}_{j}",
+                        run_date=nudge_time,
+                        args=[bot, user_id],
+                        id=f"nudge_{user_id}",
+                        replace_existing=True
+                    )
+                    restored_count += 1
+                else:
+                    # Nudge time has passed while bot was offline. Trigger it immediately!
+                    scheduler.add_job(
+                        send_subscription_nudge,
+                        trigger="date",
+                        run_date=now_utc + timedelta(seconds=5), # 5 seconds delay to allow bot startup
+                        args=[bot, user_id],
+                        id=f"nudge_{user_id}",
                         replace_existing=True
                     )
                     restored_count += 1
                     
+            # CHANGED: Allow stage 4 and stage 5
+            elif stage in [4, 5]:
+                # User has selected a bonus, and is receiving warm-ups & retentions.
+                # Schedule only warmup/content plan jobs that are still in the future!
+                for i, seq in enumerate(config.CONTENT_PLAN):
+                    delay_idx = seq["delay_index"]
+                    if delay_idx >= len(config.FOLLOW_UP_DELAYS):
+                        continue
+                    delay_minutes = config.FOLLOW_UP_DELAYS[delay_idx]
+                    warmup_time = join_dt + timedelta(minutes=delay_minutes)
+                    
+                    if warmup_time > now_utc:
+                        scheduler.add_job(
+                            send_warmup_message,
+                            trigger="date",
+                            run_date=warmup_time,
+                            args=[bot, user_id, i],
+                            id=f"warmup_{user_id}_{i}",
+                            replace_existing=True
+                        )
+                        restored_count += 1
+                        
+                # Reschedule future long-term retention jobs
+                for j, ret in enumerate(config.RETENTION_PLAN):
+                    delay_idx = ret["delay_index"]
+                    if delay_idx >= len(config.FOLLOW_UP_DELAYS):
+                        continue
+                    delay_minutes = config.FOLLOW_UP_DELAYS[delay_idx]
+                    retention_time = join_dt + timedelta(minutes=delay_minutes)
+                    
+                    if retention_time > now_utc:
+                        scheduler.add_job(
+                            send_retention_message,
+                            trigger="date",
+                            run_date=retention_time,
+                            args=[bot, user_id, j],
+                            id=f"retention_{user_id}_{j}",
+                            replace_existing=True
+                        )
+                        restored_count += 1
+                        
     logger.info(f"Startup recovery completed. Restored {restored_count} active jobs.")
 
 # NEW: Added auto-posting and manager scheduler task registration on startup
 async def start_scheduler_tasks(bot: Bot):
-    """Starts the Telethon userbots and registers auto-posting and follow-up periodic jobs."""
+    """Starts the Telethon userbots and registers auto-posting, check_inactive_leads, and follow-up periodic jobs."""
     import autoposter
     import accounts
     
@@ -564,4 +725,17 @@ async def start_scheduler_tasks(bot: Bot):
     
     # 3. Register manager followup periodic checking loop
     accounts.schedule_manager_loops()
-    logger.info("Auto-posting and userbot check loops registered successfully.")
+    
+    # 4. Register daily re-engagement check_inactive_leads cron running every 24h
+    job_id = "check_inactive_leads_daily"
+    scheduler.add_job(
+        check_inactive_leads,
+        trigger="interval",
+        hours=24,
+        args=[bot],
+        id=job_id,
+        replace_existing=True
+    )
+    logger.info(f"Scheduled check_inactive_leads daily interval job (ID: {job_id})")
+    
+    logger.info("Auto-posting, check_inactive_leads, and userbot check loops registered successfully.")

@@ -5,6 +5,7 @@
 # - Added set_user_quiz_q1(), set_user_quiz_q2(), and set_user_quiz_q3() helper functions
 # - Upgraded get_funnel_stats() and get_full_stats() to include Stage 5 count
 # - Added answer breakdowns for Q1/Q2/Q3 and top 5 quiz paths inside get_full_stats()
+# - Extended database with columns and queries for ERR Engagement Analytics, Multi-Group Manager Rotation, and Pressure Lead Funnel.
 
 import aiosqlite
 from datetime import datetime, timezone
@@ -50,6 +51,7 @@ async def init_db():
     """)
     
     # CHANGED: Added quiz answers and bonus variant column migrations
+    # Extended with columns for ERR analytics and pressure re-engagement tracking
     columns_to_add = [
         ("is_blocked", "INTEGER DEFAULT 0"),
         ("source_channel", "TEXT"),
@@ -62,7 +64,11 @@ async def init_db():
         ("quiz_q1", "TEXT"),
         ("quiz_q2", "TEXT"),
         ("quiz_q3", "TEXT"),
-        ("bonus_variant", "TEXT")
+        ("bonus_variant", "TEXT"),
+        ("messages_sent", "INTEGER DEFAULT 0"),
+        ("reactions_received", "INTEGER DEFAULT 0"),
+        ("replies_received", "INTEGER DEFAULT 0"),
+        ("pressure_started_at", "TEXT")
     ]
     for col_name, col_type in columns_to_add:
         try:
@@ -98,6 +104,16 @@ async def init_db():
             replied INTEGER DEFAULT 0
         )
     """)
+
+    # NEW: Table to track Multi-Group Manager Assignments
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS manager_assignments (
+            session_name TEXT NOT NULL,
+            group_id TEXT NOT NULL,
+            assigned_at TEXT NOT NULL,
+            PRIMARY KEY (session_name, group_id)
+        )
+    """)
     
     await db.commit()
     logger.info("Database initialized successfully.")
@@ -113,7 +129,7 @@ async def add_or_update_user(
     """
     Creates a new user or updates the username if the user already exists.
     Updates the join date (дата_входа) to current UTC time on re-entry.
-    Resets all quiz answers and bonus variables on re-entry.
+    Resets all quiz answers, bonus variables, and engagement tracking metrics on re-entry.
     """
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     db = get_db()
@@ -127,20 +143,21 @@ async def add_or_update_user(
             INSERT INTO users (
                 telegram_id, username, дата_входа, статус_подписки, этап_воронки, is_blocked,
                 source_channel, utm_source, utm_campaign, traffic_source, closer_notified, retention_stage, status,
-                quiz_q1, quiz_q2, quiz_q3, bonus_variant
+                quiz_q1, quiz_q2, quiz_q3, bonus_variant, messages_sent, reactions_received, replies_received, pressure_started_at
             )
-            VALUES (?, ?, ?, 0, 1, 0, ?, ?, ?, ?, 0, 0, 'active', '', '', '', '')
+            VALUES (?, ?, ?, 0, 1, 0, ?, ?, ?, ?, 0, 0, 'active', '', '', '', '', 0, 0, 0, NULL)
         """, (telegram_id, username, now_str, source_channel, utm_source, utm_campaign, traffic_source))
         logger.info(f"New user registered: {telegram_id} (@{username}) via: {source_channel}")
         is_new = True
     else:
-        # Existing user - update username, reset blocked state, reset stage to 1, reset closer/retention, and reset quiz answers on re-entry
+        # Existing user - update username, reset blocked state, reset stage to 1, reset closer/retention, reset quiz answers and analytics on re-entry
         await db.execute("""
             UPDATE users 
             SET username = ?, этап_воронки = 1, is_blocked = 0, дата_входа = ?,
                 source_channel = ?, utm_source = ?, utm_campaign = ?, traffic_source = ?,
                 closer_notified = 0, retention_stage = 0, status = 'active',
-                quiz_q1 = '', quiz_q2 = '', quiz_q3 = '', bonus_variant = ''
+                quiz_q1 = '', quiz_q2 = '', quiz_q3 = '', bonus_variant = '',
+                messages_sent = 0, reactions_received = 0, replies_received = 0, pressure_started_at = NULL
             WHERE telegram_id = ?
         """, (username, now_str, source_channel, utm_source, utm_campaign, traffic_source, telegram_id))
         logger.info(f"Existing user re-entered: {telegram_id} (@{username}). Quiz and tracking reset.")
@@ -263,7 +280,7 @@ async def set_user_retention_stage(telegram_id: int, stage: int):
     logger.info(f"User {telegram_id} retention stage set to {stage}.")
 
 async def set_user_status(telegram_id: int, status: str):
-    """Updates the user's overall system status (e.g., active, cold, blocked)."""
+    """Updates the user's overall system status (e.g., active, cold, blocked, pressure, lost)."""
     db = get_db()
     await db.execute("""
         UPDATE users
@@ -317,7 +334,7 @@ async def get_funnel_stats() -> dict:
 async def get_full_stats() -> dict:
     """
     Calculates comprehensive multi-dimensional funnel statistics for the /admin_full command,
-    upgraded to display quiz breakdowns, top paths, and stage 5 counts.
+    upgraded to display quiz breakdowns, top paths, stage 5 counts, and ERR Analytics.
     """
     db = get_db()
     
@@ -358,7 +375,7 @@ async def get_full_stats() -> dict:
         closer_leads = (await c.fetchone())[0] or 0
         
     # 6. Retention/status states
-    status_counts = {"active": 0, "cold": 0, "blocked": 0}
+    status_counts = {"active": 0, "cold": 0, "blocked": 0, "pressure": 0, "lost": 0}
     async with db.execute("SELECT status, COUNT(*) FROM users GROUP BY status") as cursor:
         async for row in cursor:
             status_name = row[0]
@@ -399,6 +416,15 @@ async def get_full_stats() -> dict:
                 "count": row[3]
             })
             
+    # 9. NEW: Engagement Stats and Global ERR calculation
+    async with db.execute("SELECT SUM(messages_sent), SUM(reactions_received), SUM(replies_received) FROM users") as cursor:
+        row = await cursor.fetchone()
+        messages_sent = row[0] or 0
+        reactions_received = row[1] or 0
+        replies_received = row[2] or 0
+        
+    err_ratio = (reactions_received + replies_received) / messages_sent * 100 if messages_sent > 0 else 0.0
+            
     conversion = ((stage_counts[4] + stage_counts[5]) / total) * 100 if total > 0 else 0.0
     
     return {
@@ -412,7 +438,11 @@ async def get_full_stats() -> dict:
         "q1_breakdown": q1_breakdown,
         "q2_breakdown": q2_breakdown,
         "q3_breakdown": q3_breakdown,
-        "popular_paths": popular_paths
+        "popular_paths": popular_paths,
+        "messages_sent": messages_sent,
+        "reactions_received": reactions_received,
+        "replies_received": replies_received,
+        "err": err_ratio
     }
 
 # NEW: Added tables and query helper functions for Channel Autoposting and Multi-Account Manager Systems
@@ -485,3 +515,102 @@ async def mark_replied(session_name: str, target_user_id: int):
     """, (session_name, target_user_id))
     await db.commit()
     logger.info(f"Marked user {target_user_id} as replied for manager session '{session_name}'.")
+
+# ==============================================================================
+# NEW HELPER FUNCTIONS FOR ERR & ROTATION & RE-ENGAGEMENT funnel
+# ==============================================================================
+
+async def increment_user_messages_sent(telegram_id: int):
+    """Increments the number of messages sent to a user by 1."""
+    db = get_db()
+    await db.execute("""
+        UPDATE users
+        SET messages_sent = messages_sent + 1
+        WHERE telegram_id = ?
+    """, (telegram_id,))
+    await db.commit()
+    logger.info(f"Incremented messages_sent for user {telegram_id}.")
+
+async def update_user_reactions(telegram_id: int, diff: int):
+    """Updates the count of reactions received from a user, ensuring it doesn't go below 0."""
+    db = get_db()
+    await db.execute("""
+        UPDATE users
+        SET reactions_received = MAX(0, reactions_received + ?)
+        WHERE telegram_id = ?
+    """, (diff, telegram_id))
+    await db.commit()
+    logger.info(f"Updated reactions_received for user {telegram_id} by {diff}.")
+
+async def increment_user_replies(telegram_id: int):
+    """Increments the count of replies received from a user by 1."""
+    db = get_db()
+    await db.execute("""
+        UPDATE users
+        SET replies_received = replies_received + 1
+        WHERE telegram_id = ?
+    """, (telegram_id,))
+    await db.commit()
+    logger.info(f"Incremented replies_received for user {telegram_id}.")
+
+async def set_pressure_started_at(telegram_id: int, started_at: str):
+    """Saves the timestamp when the pressure re-engagement funnel was started for a user."""
+    db = get_db()
+    await db.execute("""
+        UPDATE users
+        SET pressure_started_at = ?
+        WHERE telegram_id = ?
+    """, (started_at, telegram_id))
+    await db.commit()
+    logger.info(f"Saved pressure_started_at as '{started_at}' for user {telegram_id}.")
+
+async def get_assigned_groups_for_manager(session_name: str) -> list[str]:
+    """Retrieves list of group IDs assigned to a manager session."""
+    db = get_db()
+    async with db.execute("SELECT group_id FROM manager_assignments WHERE session_name = ?", (session_name,)) as cursor:
+        rows = await cursor.fetchall()
+        return [row[0] for row in rows]
+
+async def get_manager_assignments_mapping() -> dict[str, list[dict]]:
+    """Returns mapping of session_name -> list of group dicts {"group_id": ..., "name": ...}"""
+    db = get_db()
+    mapping = {}
+    
+    # Pre-populate empty lists for configured managers
+    import config
+    for mgr in config.MANAGER_ACCOUNTS:
+        mapping[mgr["session"]] = []
+        
+    async with db.execute("SELECT session_name, group_id FROM manager_assignments") as cursor:
+        async for row in cursor:
+            session = row[0]
+            group_id = row[1]
+            
+            # Find group name from config
+            group_name = "Неизвестная группа"
+            for g in config.MANAGER_GROUPS:
+                if str(g["group_id"]) == str(group_id):
+                    group_name = g["name"]
+                    break
+                    
+            if session not in mapping:
+                mapping[session] = []
+            mapping[session].append({"group_id": group_id, "name": group_name})
+            
+    return mapping
+
+async def get_inactive_leads_for_pressure() -> list[int]:
+    """Retrieves list of user IDs who are cold or inactive in stage 2/3 for 3+ days, eligible for pressure funnel."""
+    db = get_db()
+    # Using julianday to count the days since join date (дата_входа)
+    async with db.execute("""
+        SELECT telegram_id FROM users
+        WHERE is_blocked = 0 
+          AND status NOT IN ('pressure', 'lost', 'blocked')
+          AND (
+              status = 'cold' 
+              OR (этап_воронки IN (2, 3) AND (julianday('now') - julianday(дата_входа)) >= 3)
+          )
+    """) as cursor:
+        rows = await cursor.fetchall()
+        return [row[0] for row in rows]

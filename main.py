@@ -7,6 +7,11 @@
 #   swapping to image_2 (subscribe prompt) and scheduling nudge
 # - Upgraded check_subscription handler to call upgraded scheduler transition
 # - Upgraded /admin and /admin_full dashboards to display quiz Q1/Q2/Q3 distributions and top paths
+# - Added ChatMemberUpdated block/unblock handler tracking unsubscribe events
+# - Added MessageReactionUpdated reaction listener for ERR analytics
+# - Added catch-all reply message handler incrementing replies and resetting re-engagement states
+# - Upgraded /admin with manager groups rotation mapping
+# - Upgraded /admin_full with ERR metrics and re-engagement tracking metrics
 
 import asyncio
 import logging
@@ -15,7 +20,7 @@ from datetime import datetime
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command, CommandObject
-from aiogram.types import Message, CallbackQuery, InputMediaPhoto
+from aiogram.types import Message, CallbackQuery, InputMediaPhoto, ChatMemberUpdated, MessageReactionUpdated
 
 import config
 import database
@@ -59,10 +64,10 @@ async def on_startup():
     scheduler.scheduler.start()
     logger.info("APScheduler started.")
     
-    # 3. Restore all active scheduled jobs (Nudges & Warmups)
+    # 3. Restore all active scheduled jobs (Nudges & Warmups & Pressure Funnels)
     await scheduler.restore_scheduled_jobs(bot)
     
-    # 4. Start Telethon userbots and schedule auto-posting / manager followups
+    # 4. Start Telethon userbots and schedule auto-posting / manager followups / lead check loops
     await scheduler.start_scheduler_tasks(bot)
 
 async def on_shutdown():
@@ -200,7 +205,7 @@ async def cmd_start(message: Message, command: CommandObject = None):
 
 @dp.message(Command("admin"))
 async def cmd_admin(message: Message):
-    """Admin-only command to view real-time funnel statistics."""
+    """Admin-only command to view real-time funnel statistics and manager-group mappings."""
     if message.from_user.id != config.ADMIN_ID:
         return
 
@@ -216,11 +221,23 @@ async def cmd_admin(message: Message):
         f"🚫 Заблокировали бота: {stats['blocked']}\n\n"
         f"📈 Конверсия (старт→бонус): {stats['conversion']:.1f}%"
     )
+    
+    # Fetch Multi-Group Manager Assignments mapping (Feature 2)
+    mapping = await database.get_manager_assignments_mapping()
+    mapping_text = "\n\n💼 **Назначение менеджеров по группам (Rotation):**\n"
+    for session, groups in mapping.items():
+        mapping_text += f"  👤 `{session}`:\n"
+        if not groups:
+            mapping_text += "    (Нет привязанных групп)\n"
+        for g in groups:
+            mapping_text += f"    🔹 {g['name']} (`{g['group_id']}`)\n"
+            
+    text += mapping_text
     await message.answer(text, parse_mode="Markdown")
 
 @dp.message(Command("admin_full"))
 async def cmd_admin_full(message: Message):
-    """Admin-only command to view detailed multi-dimensional funnel stats, quiz answers and CRM leads."""
+    """Admin-only command to view detailed multi-dimensional funnel stats, quiz answers, CRM leads, and ERR engagement metrics."""
     if message.from_user.id != config.ADMIN_ID:
         return
 
@@ -281,10 +298,17 @@ async def cmd_admin_full(message: Message):
         f"{utm_text}\n"
         "💼 **Работа с лидами:**\n"
         f"  ✅ Передано в CRM (Closer Hub): {stats['closer_leads']}\n\n"
-        "❄️ **Удержание (Retention Status):**\n"
+        "❄️ **Удержание (Retention & Pressure Status):**\n"
         f"  🟢 Активные (active): {stats['statuses'].get('active', 0)}\n"
         f"  🔵 Холодные (cold): {stats['statuses'].get('cold', 0)}\n"
+        f"  🟠 В дожиме (pressure): {stats['statuses'].get('pressure', 0)}\n"
+        f"  ⚫ Потерянные (lost): {stats['statuses'].get('lost', 0)}\n"
         f"  🔴 Заблокировали бота: {stats['statuses'].get('blocked', 0)}\n\n"
+        "📈 **Вовлеченность (Engagement & ERR):**\n"
+        f"  🔹 Всего отправлено сообщений: {stats['messages_sent']}\n"
+        f"  🔹 Всего реакций получено: {stats['reactions_received']}\n"
+        f"  🔹 Всего ответов получено: {stats['replies_received']}\n"
+        f"  🔹 ERR (Engagement Rate Ratio): {stats['err']:.2f}%\n\n"
         f"📈 **Конверсия (Старт → Бонус):** {stats['conversion']:.1f}%"
     )
     
@@ -297,6 +321,9 @@ async def handle_q1_selection(callback: CallbackQuery):
     user_id = callback.from_user.id
     answer = callback.data.split(":")[1]
     logger.info(f"User {user_id} answered Q1: {answer}")
+    
+    # Intercept user activity to pull out of pressure sequence
+    await scheduler.handle_user_activity(bot, user_id)
     
     await database.set_user_quiz_q1(user_id, answer)
     await callback.answer()
@@ -319,6 +346,9 @@ async def handle_q2_selection(callback: CallbackQuery):
     user_id = callback.from_user.id
     answer = callback.data.split(":")[1]
     logger.info(f"User {user_id} answered Q2: {answer}")
+    
+    # Intercept user activity to pull out of pressure sequence
+    await scheduler.handle_user_activity(bot, user_id)
     
     await database.set_user_quiz_q2(user_id, answer)
     await callback.answer()
@@ -354,6 +384,9 @@ async def handle_q3_selection(callback: CallbackQuery):
     user_id = callback.from_user.id
     answer = callback.data.split(":")[1]
     logger.info(f"User {user_id} answered Q3: {answer}")
+    
+    # Intercept user activity to pull out of pressure sequence
+    await scheduler.handle_user_activity(bot, user_id)
     
     user_data = await database.get_user(user_id)
     persona = config.get_persona_for_user(user_data)
@@ -418,6 +451,9 @@ async def handle_subscription_check(callback: CallbackQuery):
     user_id = callback.from_user.id
     logger.info(f"User {user_id} clicked subscription verification")
     
+    # Intercept user activity to pull out of pressure sequence
+    await scheduler.handle_user_activity(bot, user_id)
+    
     user = await database.get_user(user_id)
     if not user:
         await callback.answer("⚠️ Пользователь не найден")
@@ -471,8 +507,56 @@ async def handle_bonus_selection(callback: CallbackQuery):
     bonus_value = callback.data.split(":")[1]
     logger.info(f"Legacy bonus callback invoked by {user_id}: {bonus_value}")
     
+    # Intercept user activity to pull out of pressure sequence
+    await scheduler.handle_user_activity(bot, user_id)
+    
     await callback.answer("🎁 Бонус отправлен!", show_alert=False)
     await scheduler.transition_to_step_4(bot, user_id)
+
+# -------------------------------------------------------------
+# NEW REAL-TIME EVENT AND CATCH-ALL HANDLERS
+# -------------------------------------------------------------
+
+@dp.my_chat_member()
+async def on_my_chat_member_update(update: ChatMemberUpdated):
+    """Listens for block and unblock events to track subscribe/unsubscribe statuses."""
+    user_id = update.from_user.id
+    new_status = update.new_chat_member.status
+    if new_status == "kicked":
+        logger.info(f"User {user_id} blocked the bot (unsubscribe event).")
+        await database.set_user_blocked(user_id, True)
+        await database.set_user_subscription(user_id, False)
+    elif new_status == "member":
+        logger.info(f"User {user_id} unblocked the bot (subscribe event).")
+        await database.set_user_blocked(user_id, False)
+
+@dp.message_reaction()
+async def handle_message_reaction(event: MessageReactionUpdated):
+    """Listens to message reaction additions/removals in real-time to compute the ERR."""
+    user_id = event.chat.id
+    old_count = len(event.old_reaction)
+    new_count = len(event.new_reaction)
+    diff = new_count - old_count
+    
+    if diff != 0:
+        await database.update_user_reactions(user_id, diff)
+        logger.info(f"User {user_id} modified their reaction. Old count: {old_count}, new count: {new_count}. Diff: {diff}")
+
+@dp.message()
+async def handle_user_message(message: Message):
+    """Catch-all message handler to register user replies and reset pressure/cold statuses."""
+    # Ignore bot commands
+    if message.text and message.text.startswith("/"):
+        return
+        
+    user_id = message.from_user.id
+    logger.info(f"Received reply from user {user_id}: {message.text}")
+    
+    # Reset pressure/cold statuses and cancel outstanding pressure jobs
+    await scheduler.handle_user_activity(bot, user_id)
+    
+    # Increment replies counter in SQLite
+    await database.increment_user_replies(user_id)
 
 # -------------------------------------------------------------
 # MAIN STARTUP FUNCTION
