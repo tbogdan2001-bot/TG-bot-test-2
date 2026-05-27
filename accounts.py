@@ -265,12 +265,11 @@ async def start_manager_accounts():
                     print(f"   Телефон: {phone_num}")
                     print(f"   (Код подтверждения придет в ваш Telegram-клиент)")
                     print(f"=========================================================")
-                    
                     try:
                         await client.start(
                             phone=phone_num,
-                            code_callback=lambda: input("📨 Введите код подтверждения Telegram: ").strip(),
-                            password_callback=lambda: input("🔒 Введите пароль двухфакторной аутентификации (2FA, если есть): ").strip()
+                            password=lambda: input("🔒 Введите пароль двухфакторной аутентификации (2FA, если есть): ").strip(),
+                            code_callback=lambda: input("📨 Введите код подтверждения Telegram: ").strip()
                         )
                         logger.info(f"✅ Сессия Telethon '{session_name}' успешно авторизована!")
                     except Exception as auth_err:
