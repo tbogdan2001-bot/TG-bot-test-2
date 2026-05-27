@@ -7,11 +7,13 @@
 # - Added answer breakdowns for Q1/Q2/Q3 and top 5 quiz paths inside get_full_stats()
 # - Extended database with columns and queries for ERR Engagement Analytics, Multi-Group Manager Rotation, and Pressure Lead Funnel.
 
+import os
 import aiosqlite
 from datetime import datetime, timezone
 import logging
+import config
 
-DB_PATH = "funnel_bot.db"
+DB_PATH = os.path.join(config.BASE_DIR, "funnel_bot.db")
 
 logger = logging.getLogger(__name__)
 

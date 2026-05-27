@@ -249,15 +249,41 @@ async def start_manager_accounts():
             
             await client.connect()
             
-            # Check user authorization non-blockingly
+            # Check user authorization
             if not await client.is_user_authorized():
-                logger.warning(
-                    f"⚠️ Telethon session '{session_name}' is not authorized!\n"
-                    f"To authorize this session, please run a separate interactive script or "
-                    f"execute: client.start(phone='{mgr.get('phone')}') in a console environment."
-                )
-                await client.disconnect()
-                continue
+                import sys
+                is_interactive = sys.stdin and sys.stdin.isatty()
+                
+                if is_interactive:
+                    logger.info(f"🔑 Сессия Telethon '{session_name}' не авторизована.")
+                    phone_num = mgr.get("phone") or (config.MANAGER_1_PHONE if hasattr(config, "MANAGER_1_PHONE") else "")
+                    if not phone_num:
+                        phone_num = input(f"📱 Введите номер телефона для менеджера '{session_name}' (например +380991234567): ").strip()
+                    
+                    print(f"\n=========================================================")
+                    print(f"   🔐 ВХОД В АККАУНТ ТЕЛЕГРАМ ДЛЯ ЮЗЕРБОТА '{session_name}'")
+                    print(f"   Телефон: {phone_num}")
+                    print(f"   (Код подтверждения придет в ваш Telegram-клиент)")
+                    print(f"=========================================================")
+                    
+                    try:
+                        await client.start(
+                            phone=phone_num,
+                            code_callback=lambda: input("📨 Введите код подтверждения Telegram: ").strip(),
+                            password_callback=lambda: input("🔒 Введите пароль двухфакторной аутентификации (2FA, если есть): ").strip()
+                        )
+                        logger.info(f"✅ Сессия Telethon '{session_name}' успешно авторизована!")
+                    except Exception as auth_err:
+                        logger.error(f"❌ Не удалось авторизовать сессию '{session_name}': {auth_err}")
+                        await client.disconnect()
+                        continue
+                else:
+                    logger.warning(
+                        f"⚠️ Telethon session '{session_name}' is not authorized!\n"
+                        f"To authorize this session, please run the bot in an interactive console."
+                    )
+                    await client.disconnect()
+                    continue
                 
             # Logged in successfully! Cache client in running registry
             active_clients[session_name] = client

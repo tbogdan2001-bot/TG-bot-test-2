@@ -19,10 +19,18 @@ echo [2/4] Компиляция проекта в один .exe файл...
 python -m PyInstaller --onefile --console --name="telegram_funnel_bot" --hidden-import="aiogram" --hidden-import="aiogram.dispatcher" --hidden-import="aiogram.filters" --hidden-import="aiogram.fsm.storage.memory" --hidden-import="aiogram.types" --hidden-import="aiosqlite" --hidden-import="apscheduler" --hidden-import="apscheduler.schedulers.asyncio" --hidden-import="apscheduler.triggers.cron" --hidden-import="apscheduler.triggers.interval" --hidden-import="apscheduler.triggers.date" --hidden-import="telethon" --hidden-import="telethon.crypto" --hidden-import="telethon.extensions" --hidden-import="google.generativeai" --hidden-import="google.protobuf" --hidden-import="google.protobuf.descriptor" --hidden-import="google.protobuf.message" --hidden-import="google.protobuf.pyext._message" main.py
 echo.
 
-echo [3/4] Копирование конфигурационного файла .env в папку сборки...
-if exist .env copy .env dist\.env
-if exist .env echo [УСПЕХ] Файл .env успешно скопирован в папку dist!
-if not exist .env echo [ВНИМАНИЕ] Файл .env не найден в корне! Скопируйте его вручную.
+echo [3/4] Копирование конфигурационных файлов в папку сборки dist...
+if exist .env (
+    copy /y .env dist\.env
+    echo [УСПЕХ] Файл .env успешно скопирован в папку dist!
+) else (
+    if exist .env.example (
+        copy /y .env.example dist\.env
+        echo [УСПЕХ] Шаблон .env.example скопирован как dist\.env!
+    ) else (
+        echo [ВНИМАНИЕ] Конфигурационные файлы не найдены в корне проекта!
+    )
+)
 echo.
 
 echo [4/4] Очистка временных файлов сборщика...

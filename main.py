@@ -18,6 +18,7 @@ import logging
 import sys
 from datetime import datetime
 
+import os
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command, CommandObject
 from aiogram.types import Message, CallbackQuery, InputMediaPhoto, ChatMemberUpdated, MessageReactionUpdated
@@ -33,14 +34,14 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("bot.log", encoding="utf-8")
+        logging.FileHandler(os.path.join(config.BASE_DIR, "bot.log"), encoding="utf-8")
     ]
 )
 logger = logging.getLogger(__name__)
 
 # Initialize Bot and Dispatcher
 if not config.BOT_TOKEN:
-    logger.critical("BOT_TOKEN is empty! Please set it in config.py before launching the bot.")
+    logger.critical("BOT_TOKEN is empty! Please configure it in .env before launching the bot.")
     sys.exit("Critical Error: BOT_TOKEN is missing.")
 
 bot = Bot(token=config.BOT_TOKEN)

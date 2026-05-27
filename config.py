@@ -9,16 +9,150 @@
 # - Added PRESSURE_PLAN containing 5 messages over 5 days for re-engaging inactive leads
 
 import os
+import sys
 from dotenv import load_dotenv
 
-load_dotenv()
+# Resolve absolute directory where bot is running (handles PyInstaller compilation)
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def check_and_interactive_config():
+    env_path = os.path.join(BASE_DIR, ".env")
+    
+    config_values = {}
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        config_values[k.strip()] = v.strip()
+        except Exception:
+            pass
+            
+    placeholders = {
+        "BOT_TOKEN": ["YOUR_BOT_TOKEN_HERE", ""],
+        "ADMIN_ID": ["987654321", "0", ""],
+        "TELEGRAM_API_ID": ["1234567", "0", ""],
+        "TELEGRAM_API_HASH": ["your_api_hash_here", ""],
+        "MANAGER_1_PHONE": ["+380000000000", ""]
+    }
+    
+    needs_setup = False
+    for key, bad_vals in placeholders.items():
+        val = config_values.get(key, "")
+        if val in bad_vals:
+            needs_setup = True
+            break
+            
+    # Check if we can interact (we need stdin and isatty)
+    is_interactive = sys.stdin and sys.stdin.isatty()
+    
+    if needs_setup and is_interactive:
+        print("\n=========================================================")
+        print("   🚀 НАСТРОЙКА TELEGRAM-БОТА // INTERACTIVE SETUP   ")
+        print("=========================================================")
+        print(" Привет! Обнаружены незаполненные или шаблонные настройки.")
+        print(" Пожалуйста, укажите ваши данные ниже для настройки .env:\n")
+
+        # 1. BOT_TOKEN
+        bot_token = config_values.get("BOT_TOKEN", "")
+        if bot_token in placeholders["BOT_TOKEN"]:
+            while True:
+                val = input("🔑 Введите ТОКЕН БОТА (BOT_TOKEN) от @BotFather: ").strip()
+                if val and val not in placeholders["BOT_TOKEN"]:
+                    bot_token = val
+                    break
+                print("❌ Токен не может быть пустым. Пожалуйста, введите корректный токен.")
+
+        # 2. ADMIN_ID
+        admin_id = config_values.get("ADMIN_ID", "")
+        if admin_id in placeholders["ADMIN_ID"]:
+            while True:
+                val = input("👤 Введите ваш Telegram User ID (ADMIN_ID): ").strip()
+                if val.isdigit() and val != "0":
+                    admin_id = val
+                    break
+                print("❌ ID должен состоять только из цифр. Получить его можно в @userinfobot.")
+
+        # 3. TELEGRAM_API_ID
+        api_id = config_values.get("TELEGRAM_API_ID", "")
+        if api_id in placeholders["TELEGRAM_API_ID"]:
+            while True:
+                val = input("🆔 Введите API ID от my.telegram.org (TELEGRAM_API_ID): ").strip()
+                if val.isdigit() and val != "0":
+                    api_id = val
+                    break
+                print("❌ API ID должен быть числовым.")
+
+        # 4. TELEGRAM_API_HASH
+        api_hash = config_values.get("TELEGRAM_API_HASH", "")
+        if api_hash in placeholders["TELEGRAM_API_HASH"]:
+            while True:
+                val = input("🔐 Введите API HASH от my.telegram.org (TELEGRAM_API_HASH): ").strip()
+                if val and val not in placeholders["TELEGRAM_API_HASH"]:
+                    api_hash = val
+                    break
+                print("❌ API HASH не может быть пустым.")
+
+        # 5. MANAGER_1_PHONE
+        phone = config_values.get("MANAGER_1_PHONE", "")
+        if phone in placeholders["MANAGER_1_PHONE"]:
+            while True:
+                val = input("📱 Введите телефон МЕНЕДЖЕРА 1 (например +380991234567): ").strip()
+                if val.startswith("+") and len(val) > 7:
+                    phone = val
+                    break
+                print("❌ Номер должен начинаться с + и содержать код страны.")
+
+        # 6. GEMINI_API_KEY
+        gemini_key = config_values.get("GEMINI_API_KEY", "")
+        if gemini_key in ["YOUR_GEMINI_API_KEY_HERE", ""]:
+            val = input("🤖 Введите Google Gemini API Key (Enter чтобы пропустить): ").strip()
+            if val and val != "YOUR_GEMINI_API_KEY_HERE":
+                gemini_key = val
+            else:
+                gemini_key = ""
+
+        closer_chat = config_values.get("CLOSER_NOTIFY_CHAT_ID", "-1002222222222")
+
+        # Save back to .env file inside BASE_DIR
+        try:
+            with open(env_path, "w", encoding="utf-8") as f:
+                f.write("# Telegram Bot Funnel Configuration\n")
+                f.write("# Generated automatically via Interactive setup wizard\n\n")
+                f.write(f"BOT_TOKEN={bot_token}\n")
+                f.write(f"ADMIN_ID={admin_id}\n")
+                f.write(f"CLOSER_NOTIFY_CHAT_ID={closer_chat}\n")
+                f.write("CHANNEL_ID=-1002222222222\n")
+                f.write("CHANNEL_LINK=https://t.me/crypto_inside_channel\n")
+                f.write("CHANNEL_NAME=Crypto Inside 📈\n")
+                f.write(f"GEMINI_API_KEY={gemini_key}\n")
+                f.write(f"TELEGRAM_API_ID={api_id}\n")
+                f.write(f"TELEGRAM_API_HASH={api_hash}\n")
+                f.write(f"MANAGER_1_PHONE={phone}\n")
+            print("\n[УСПЕХ] Настройки успешно записаны в .env файл!")
+            print("=========================================================\n")
+        except Exception as e:
+            print(f"\n❌ Ошибка при записи файла .env: {e}")
+            print("=========================================================\n")
+
+    # Load from resolved path
+    load_dotenv(env_path, override=True)
+
+# Run interactive config check
+check_and_interactive_config()
 
 # 1. Telegram Connection Configuration
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "")          # Default channel backup
 CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/example_channel")
 CHANNEL_NAME = os.getenv("CHANNEL_NAME", "Crypto Inside 📈")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+admin_id_raw = os.getenv("ADMIN_ID", "0")
+ADMIN_ID = int(admin_id_raw) if admin_id_raw.isdigit() else 0
 
 # Closer CRM Forwarding Destination Chat ID
 CLOSER_NOTIFY_CHAT_ID = os.getenv("CLOSER_NOTIFY_CHAT_ID", "")
@@ -316,7 +450,8 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 POSTING_SCHEDULE = ["09:00", "17:00"]
 
 # Manager accounts (Telethon userbots)
-TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID", "0"))
+api_id_raw = os.getenv("TELEGRAM_API_ID", "0")
+TELEGRAM_API_ID = int(api_id_raw) if api_id_raw.isdigit() else 0
 TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 
 MANAGER_ACCOUNTS = [
