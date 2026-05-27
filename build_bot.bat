@@ -1,6 +1,7 @@
 @echo off
-title Telegram Bot EXE Compiler
+title Compiler
 chcp 65001 > nul
+
 echo ===================================================
 echo   СТАРТ СБОРКИ TELEGRAM-БОТА В .EXE ФАЙЛ
 echo ===================================================
@@ -12,36 +13,13 @@ pip install -r requirements.txt pyinstaller
 echo.
 
 echo [2/4] Компиляция проекта в один .exe файл...
-pyinstaller --onefile --console --name="telegram_funnel_bot" ^
-  --hidden-import="aiogram" ^
-  --hidden-import="aiogram.dispatcher" ^
-  --hidden-import="aiogram.filters" ^
-  --hidden-import="aiogram.fsm.storage.memory" ^
-  --hidden-import="aiogram.types" ^
-  --hidden-import="aiosqlite" ^
-  --hidden-import="apscheduler" ^
-  --hidden-import="apscheduler.schedulers.asyncio" ^
-  --hidden-import="apscheduler.triggers.cron" ^
-  --hidden-import="apscheduler.triggers.interval" ^
-  --hidden-import="apscheduler.triggers.date" ^
-  --hidden-import="telethon" ^
-  --hidden-import="telethon.crypto" ^
-  --hidden-import="telethon.extensions" ^
-  --hidden-import="google.generativeai" ^
-  --hidden-import="google.protobuf" ^
-  --hidden-import="google.protobuf.descriptor" ^
-  --hidden-import="google.protobuf.message" ^
-  --hidden-import="google.protobuf.pyext._message" ^
-  main.py
-
+pyinstaller --onefile --console --name="telegram_funnel_bot" --hidden-import="aiogram" --hidden-import="aiogram.dispatcher" --hidden-import="aiogram.filters" --hidden-import="aiogram.fsm.storage.memory" --hidden-import="aiogram.types" --hidden-import="aiosqlite" --hidden-import="apscheduler" --hidden-import="apscheduler.schedulers.asyncio" --hidden-import="apscheduler.triggers.cron" --hidden-import="apscheduler.triggers.interval" --hidden-import="apscheduler.triggers.date" --hidden-import="telethon" --hidden-import="telethon.crypto" --hidden-import="telethon.extensions" --hidden-import="google.generativeai" --hidden-import="google.protobuf" --hidden-import="google.protobuf.descriptor" --hidden-import="google.protobuf.message" --hidden-import="google.protobuf.pyext._message" main.py
 echo.
+
 echo [3/4] Копирование конфигурационного файла .env в папку сборки...
-if exist .env (
-    copy .env dist\.env
-    echo [УСПЕХ] Файл .env успешно скопирован в папку dist!
-) else (
-    echo [ПРЕДУПРЕЖДЕНИЕ] Файл .env не найден в корне. Пожалуйста, скопируйте его в папку dist вручную.
-)
+if exist .env copy .env dist\.env
+if exist .env echo [УСПЕХ] Файл .env успешно скопирован в папку dist!
+if not exist .env echo [ПРЕДУПРЕЖДЕНИЕ] Файл .env не найден в корне. Пожалуйста, скопируйте его в папку dist вручную.
 echo.
 
 echo [4/4] Очистка временных файлов сборщика...
