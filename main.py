@@ -12,7 +12,7 @@
 # - Added catch-all reply message handler incrementing replies and resetting re-engagement states
 # - Upgraded /admin with manager groups rotation mapping
 # - Upgraded /admin_full with ERR metrics and re-engagement tracking metrics
-# CHANGED: Added Keitaro subid extraction and PostBack firing on subscription confirmation
+# CHANGED: Added Keitaro subid extraction from /start and PostBack firing on subscription confirmation
 
 import asyncio
 import logging
@@ -139,8 +139,8 @@ async def cmd_start(message: Message, command: CommandObject = None):
     utm_campaign = ""
     traffic_source = start_param
 
-    # Save the full start_param as Keitaro subid (e.g. "AFF.122.42sasafaf43")
-    keitaro_subid = start_param
+    # CHANGED: Save the full start_param as keitaro_subid for PostBack conversion tracking
+    keitaro_subid = start_param  # e.g. "AFF.122.42sasafaf43" from Keitaro
     
     if start_param:
         parts = start_param.split("_utm_")
@@ -185,7 +185,7 @@ async def cmd_start(message: Message, command: CommandObject = None):
     # Cancel any active jobs if this is a re-entry
     scheduler.cancel_active_jobs_for_user(user_id)
     
-    # Add/update user in DB including traffic tracking variables and Keitaro subid
+    # Add/update user in DB including traffic tracking variables and keitaro subid
     await database.add_or_update_user(
         telegram_id=user_id,
         username=username,
@@ -193,7 +193,7 @@ async def cmd_start(message: Message, command: CommandObject = None):
         utm_source=utm_source,
         utm_campaign=utm_campaign,
         traffic_source=traffic_source,
-        subid=keitaro_subid
+        subid=keitaro_subid  # CHANGED: pass subid for Keitaro PostBack
     )
     
     # Retrieve dynamic assigned marketing persona for personalized assets
@@ -470,7 +470,7 @@ async def handle_subscription_check(callback: CallbackQuery):
     """
     Step 3: Triggered when user clicks "Я подписался".
     Verifies subscription using get_chat_member.
-    If subscribed: sends Keitaro PostBack, then transitions to Step 4 (delivering bonus + dark club visual).
+    If subscribed: fires Keitaro PostBack, then transitions to Step 4 (delivering bonus + dark club visual).
     If not: displays a retry warning.
     """
     user_id = callback.from_user.id
@@ -498,7 +498,7 @@ async def handle_subscription_check(callback: CallbackQuery):
         except Exception as delete_err:
             logger.debug(f"Could not delete message: {delete_err}")
 
-        # Fire Keitaro PostBack to register conversion
+        # CHANGED: Fire Keitaro PostBack to register conversion
         user_subid = user.get("subid", "")
         if user_subid and config.KEITARO_POSTBACK_URL:
             await send_keitaro_postback(user_subid, config.KEITARO_POSTBACK_URL)
