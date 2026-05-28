@@ -181,6 +181,9 @@ if CLOSER_NOTIFY_CHAT_ID.startswith("-") or CLOSER_NOTIFY_CHAT_ID.isdigit():
 # CHANGED: Private Club link configuration
 PRIVATE_CLUB_LINK = os.getenv("PRIVATE_CLUB_LINK", "https://t.me/+joinchat_example")
 
+# Keitaro PostBack URL configuration loaded from environment
+KEITARO_POSTBACK_URL = os.getenv("KEITARO_POSTBACK_URL", "")
+
 # CHANGED: Multi-Account Persona Support Configuration Profiles expanded to 5 images
 PERSONAS = {
     "alexander": {

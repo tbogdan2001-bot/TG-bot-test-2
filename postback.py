@@ -23,10 +23,10 @@ async def send_keitaro_postback(subid: str, postback_url: str) -> bool:
 
     # Append subid param if not already present as a template placeholder
     if "{subid}" in postback_url:
-        url = postback_url.replace("{subid}", subid)
+        url = postback_url.replace("{subid}", subid).replace("{status}", "approved")
     else:
         separator = "&" if "?" in postback_url else "?"
-        url = f"{postback_url}{separator}subid={subid}&status=subscribed"
+        url = f"{postback_url}{separator}subid={subid}&status=approved"
 
     try:
         async with aiohttp.ClientSession() as session:
