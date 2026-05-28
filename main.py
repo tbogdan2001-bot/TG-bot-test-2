@@ -12,3 +12,20 @@
 # - Added catch-all reply message handler incrementing replies and resetting re-engagement states
 # - Upgraded /admin with manager groups rotation mapping
 # - Upgraded /admin_full with ERR metrics and re-engagement tracking metrics
+# CHANGED: Keitaro subid tracking — extract start_param as keitaro_subid, pass to DB, send PostBack on subscription
+
+import asyncio
+import logging
+import sys
+from datetime import datetime
+
+import os
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import CommandStart, Command, CommandObject
+from aiogram.types import Message, CallbackQuery, InputMediaPhoto, ChatMemberUpdated, MessageReactionUpdated, ErrorEvent
+
+import config
+import database
+import keyboards
+import scheduler
+from postback import send_keitaro_postback
