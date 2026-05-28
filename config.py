@@ -14,11 +14,31 @@ else:
 
 # Load .env from the same folder as the script/exe
 dotenv_path = os.path.join(BASE_DIR, ".env")
+
+if not os.path.exists(dotenv_path):
+    print("=" * 60)
+    print("CRITICAL ERROR: .env file not found!")
+    print(f"Expected location: {dotenv_path}")
+    print("Please create a .env file next to the executable.")
+    print("=" * 60)
+    input("Press Enter to exit...")
+    sys.exit(1)
+
 load_dotenv(dotenv_path=dotenv_path)
 
 # ── Core Bot Settings ──────────────────────────────────────────────────────────
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+
+# Validate critical variables
+if not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
+    print("=" * 60)
+    print("CRITICAL ERROR: BOT_TOKEN is not set in .env!")
+    print(f".env file location: {dotenv_path}")
+    print("Please set BOT_TOKEN=your_token in the .env file.")
+    print("=" * 60)
+    input("Press Enter to exit...")
+    sys.exit(1)
 
 # ── CRM Lead Forwarding ────────────────────────────────────────────────────────
 CLOSER_NOTIFY_CHAT_ID = int(os.getenv("CLOSER_NOTIFY_CHAT_ID", "0"))
@@ -40,7 +60,6 @@ MANAGER_1_PHONE = os.getenv("MANAGER_1_PHONE", "")
 KEITARO_POSTBACK_URL = os.getenv("KEITARO_POSTBACK_URL", "")
 
 # ── Manager Accounts (Telethon userbot sessions) ───────────────────────────────
-# Add more entries here if you have multiple manager accounts
 MANAGER_ACCOUNTS = [
     {
         "session": "manager_1",
@@ -50,7 +69,6 @@ MANAGER_ACCOUNTS = [
 ]
 
 # ── Manager Target Groups ──────────────────────────────────────────────────────
-# Groups where userbots watch for new members and send first-contact messages
 MANAGER_GROUPS = [
     # Example: {"group_id": -1001234567890, "name": "My Group"}
 ]
