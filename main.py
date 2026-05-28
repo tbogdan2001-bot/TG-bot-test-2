@@ -12,6 +12,7 @@
 # - Added catch-all reply message handler incrementing replies and resetting re-engagement states
 # - Upgraded /admin with manager groups rotation mapping
 # - Upgraded /admin_full with ERR metrics and re-engagement tracking metrics
+# CHANGED: Added Keitaro subid extraction and PostBack firing on subscription confirmation
 
 import asyncio
 import logging
@@ -27,6 +28,7 @@ import config
 import database
 import keyboards
 import scheduler
+from postback import send_keitaro_postback
 
 # Configure logging
 logging.basicConfig(
@@ -136,6 +138,9 @@ async def cmd_start(message: Message, command: CommandObject = None):
     utm_source = ""
     utm_campaign = ""
     traffic_source = start_param
+
+    # Save the full start_param as Keitaro subid (e.g. "AFF.122.42sasafaf43")
+    keitaro_subid = start_param
     
     if start_param:
         parts = start_param.split("_utm_")
@@ -174,20 +179,21 @@ async def cmd_start(message: Message, command: CommandObject = None):
 
     logger.info(
         f"User {user_id} (@{username}) entered start funnel. "
-        f"Channel: '{source_channel}', UTM: '{utm_source}/{utm_campaign}'"
+        f"Channel: '{source_channel}', UTM: '{utm_source}/{utm_campaign}', subid: '{keitaro_subid}'"
     )
     
     # Cancel any active jobs if this is a re-entry
     scheduler.cancel_active_jobs_for_user(user_id)
     
-    # Add/update user in DB including traffic tracking variables (will reset new quiz columns to empty/NULL)
+    # Add/update user in DB including traffic tracking variables and Keitaro subid
     await database.add_or_update_user(
         telegram_id=user_id,
         username=username,
         source_channel=source_channel,
         utm_source=utm_source,
         utm_campaign=utm_campaign,
-        traffic_source=traffic_source
+        traffic_source=traffic_source,
+        subid=keitaro_subid
     )
     
     # Retrieve dynamic assigned marketing persona for personalized assets
@@ -464,7 +470,7 @@ async def handle_subscription_check(callback: CallbackQuery):
     """
     Step 3: Triggered when user clicks "Я подписался".
     Verifies subscription using get_chat_member.
-    If subscribed: transitions to Step 4 (delivering bonus + dark club visual).
+    If subscribed: sends Keitaro PostBack, then transitions to Step 4 (delivering bonus + dark club visual).
     If not: displays a retry warning.
     """
     user_id = callback.from_user.id
@@ -491,6 +497,11 @@ async def handle_subscription_check(callback: CallbackQuery):
             await callback.message.delete()
         except Exception as delete_err:
             logger.debug(f"Could not delete message: {delete_err}")
+
+        # Fire Keitaro PostBack to register conversion
+        user_subid = user.get("subid", "")
+        if user_subid and config.KEITARO_POSTBACK_URL:
+            await send_keitaro_postback(user_subid, config.KEITARO_POSTBACK_URL)
             
         # Transitions user to Step 4 (Auto-delivers personalized bonus) and immediately to Step 5 (Dark CTA Card)
         await scheduler.transition_to_step_4(bot, user_id)

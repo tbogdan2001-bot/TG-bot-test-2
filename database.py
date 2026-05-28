@@ -6,6 +6,7 @@
 # - Upgraded get_funnel_stats() and get_full_stats() to include Stage 5 count
 # - Added answer breakdowns for Q1/Q2/Q3 and top 5 quiz paths inside get_full_stats()
 # - Extended database with columns and queries for ERR Engagement Analytics, Multi-Group Manager Rotation, and Pressure Lead Funnel.
+# CHANGED: Added subid column for Keitaro PostBack integration
 
 import os
 import aiosqlite
@@ -54,6 +55,7 @@ async def init_db():
     
     # CHANGED: Added quiz answers and bonus variant column migrations
     # Extended with columns for ERR analytics and pressure re-engagement tracking
+    # CHANGED: Added subid column for Keitaro PostBack integration
     columns_to_add = [
         ("is_blocked", "INTEGER DEFAULT 0"),
         ("source_channel", "TEXT"),
@@ -70,7 +72,8 @@ async def init_db():
         ("messages_sent", "INTEGER DEFAULT 0"),
         ("reactions_received", "INTEGER DEFAULT 0"),
         ("replies_received", "INTEGER DEFAULT 0"),
-        ("pressure_started_at", "TEXT")
+        ("pressure_started_at", "TEXT"),
+        ("subid", "TEXT"),  # Keitaro click ID from ?start= parameter
     ]
     for col_name, col_type in columns_to_add:
         try:
@@ -126,7 +129,8 @@ async def add_or_update_user(
     source_channel: str = "", 
     utm_source: str = "", 
     utm_campaign: str = "", 
-    traffic_source: str = ""
+    traffic_source: str = "",
+    subid: str = ""  # Keitaro click ID from ?start= parameter
 ) -> bool:
     """
     Creates a new user or updates the username if the user already exists.
@@ -144,25 +148,25 @@ async def add_or_update_user(
         await db.execute("""
             INSERT INTO users (
                 telegram_id, username, дата_входа, статус_подписки, этап_воронки, is_blocked,
-                source_channel, utm_source, utm_campaign, traffic_source, closer_notified, retention_stage, status,
+                source_channel, utm_source, utm_campaign, traffic_source, subid, closer_notified, retention_stage, status,
                 quiz_q1, quiz_q2, quiz_q3, bonus_variant, messages_sent, reactions_received, replies_received, pressure_started_at
             )
-            VALUES (?, ?, ?, 0, 1, 0, ?, ?, ?, ?, 0, 0, 'active', '', '', '', '', 0, 0, 0, NULL)
-        """, (telegram_id, username, now_str, source_channel, utm_source, utm_campaign, traffic_source))
-        logger.info(f"New user registered: {telegram_id} (@{username}) via: {source_channel}")
+            VALUES (?, ?, ?, 0, 1, 0, ?, ?, ?, ?, ?, 0, 0, 'active', '', '', '', '', 0, 0, 0, NULL)
+        """, (telegram_id, username, now_str, source_channel, utm_source, utm_campaign, traffic_source, subid))
+        logger.info(f"New user registered: {telegram_id} (@{username}) via: {source_channel}, subid: {subid}")
         is_new = True
     else:
         # Existing user - update username, reset blocked state, reset stage to 1, reset closer/retention, reset quiz answers and analytics on re-entry
         await db.execute("""
             UPDATE users 
             SET username = ?, этап_воронки = 1, is_blocked = 0, дата_входа = ?,
-                source_channel = ?, utm_source = ?, utm_campaign = ?, traffic_source = ?,
+                source_channel = ?, utm_source = ?, utm_campaign = ?, traffic_source = ?, subid = ?,
                 closer_notified = 0, retention_stage = 0, status = 'active',
                 quiz_q1 = '', quiz_q2 = '', quiz_q3 = '', bonus_variant = '',
                 messages_sent = 0, reactions_received = 0, replies_received = 0, pressure_started_at = NULL
             WHERE telegram_id = ?
-        """, (username, now_str, source_channel, utm_source, utm_campaign, traffic_source, telegram_id))
-        logger.info(f"Existing user re-entered: {telegram_id} (@{username}). Quiz and tracking reset.")
+        """, (username, now_str, source_channel, utm_source, utm_campaign, traffic_source, subid, telegram_id))
+        logger.info(f"Existing user re-entered: {telegram_id} (@{username}). subid: {subid}. Quiz and tracking reset.")
         is_new = False
         
     await db.commit()
