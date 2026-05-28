@@ -4,6 +4,7 @@
 # tracks conversation replies to automatically halt re-engagement,
 # and runs a scheduled background checker to deliver Day 1, 3, 5 follow-ups.
 # - Extended to support Multi-Group Manager Rotation (Feature 3) using SQLite-backed round-robin rotation.
+# FIXED: Replaced deprecated NewMessage(private=True) with NewMessage(func=lambda e: e.is_private)
 
 import asyncio
 import logging
@@ -141,7 +142,8 @@ async def register_chat_event_listeners(session_name: str, client: TelegramClien
                 logger.error(f"Userbot '{session_name}' failed to process join event: {e}", exc_info=True)
 
     # 2. Listen for incoming private messages to detect user replies
-    @client.on(events.NewMessage(incoming=True, private=True))
+    # FIXED: private=True is deprecated in newer Telethon versions, use func=lambda instead
+    @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
     async def handle_reply(event):
         try:
             sender_id = event.sender_id
