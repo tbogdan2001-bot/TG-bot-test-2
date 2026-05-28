@@ -74,12 +74,26 @@ async def safe_send(bot: Bot, user_id: int, text: str, photo: str = None, kb = N
 
 async def check_member_status(bot: Bot, channel_id: str, user_id: int) -> bool:
     """Helper to check if a user is subscribed to the channel."""
+    # Gracefully bypass check if the channel ID is a default placeholder
+    if not channel_id or any(placeholder in str(channel_id) for placeholder in ["222222", "333333", "444444"]):
+        logger.warning(f"Bypassing subscription check for user {user_id} because channel_id '{channel_id}' is a placeholder/empty.")
+        return True
+
     try:
         member = await bot.get_chat_member(chat_id=channel_id, user_id=user_id)
         # Member statuses that count as subscribed
         return member.status in ["member", "creator", "administrator"]
     except Exception as e:
-        logger.error(f"Error checking sub status for user {user_id}: {e}")
+        err_msg = str(e)
+        logger.error(f"Error checking sub status for user {user_id} in chat {channel_id}: {err_msg}")
+        
+        # If the check fails because the chat is not found, or the bot is not in the chat,
+        # we bypass the block to prevent users from getting stuck due to misconfiguration.
+        bypass_errors = ["chat not found", "bot is not a member", "not member", "member not found", "chat_write_forbidden"]
+        if any(err in err_msg.lower() for err in bypass_errors):
+            logger.warning(f"Bypassing subscription check for user {user_id} due to API access error: {err_msg}")
+            return True
+            
         return False
 
 async def send_subscription_nudge(bot: Bot, user_id: int):

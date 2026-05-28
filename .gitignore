@@ -16,3 +16,11 @@ env/
 
 # Log files
 *.log
+
+# Telethon session credentials
+*.session
+*.session-journal
+
+# PyInstaller temp build files
+build/
+*.spec

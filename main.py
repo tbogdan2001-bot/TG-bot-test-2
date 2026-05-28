@@ -12,7 +12,6 @@
 # - Added catch-all reply message handler incrementing replies and resetting re-engagement states
 # - Upgraded /admin with manager groups rotation mapping
 # - Upgraded /admin_full with ERR metrics and re-engagement tracking metrics
-# CHANGED: Keitaro subid tracking — extract start_param as keitaro_subid, pass to DB, send PostBack on subscription
 
 import asyncio
 import logging
@@ -28,27 +27,88 @@ import config
 import database
 import keyboards
 import scheduler
-from postback import send_keitaro_postback
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(os.path.join(config.BASE_DIR, "bot.log"), encoding="utf-8")
+    ]
 )
 logger = logging.getLogger(__name__)
 
-# Initialize bot and dispatcher
+# Initialize Bot and Dispatcher
+if not config.BOT_TOKEN or config.BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
+    logger.critical("BOT_TOKEN is empty or placeholder! Please configure it in .env before launching the bot.")
+    print("\n" + "="*70)
+    print("❌ [КРИТИЧЕСКАЯ ОШИБКА] ТОКЕН БОТА (BOT_TOKEN) НЕ ЗАДАН ИЛИ ЯВЛЯЕТСЯ ШАБЛОННЫМ!")
+    print("="*70)
+    print("\nПохоже, вы запустили скомпилированного бота (.exe) на новом устройстве,")
+    print("но забыли перенести или настроить конфигурационный файл.\n")
+    print("ℹ️  ДЛЯ ИСПРАВЛЕНИЯ ВЫПОЛНИТЕ СЛЕДУЮЩИЕ ШАГИ:")
+    print("  1. Скопируйте файл '.env' с вашего компьютера разработчика")
+    print("     и положите его в ту же папку, где лежит этот .exe файл.")
+    print("  2. Если вы хотите настроить его с нуля, откройте файл '.env'")
+    print("     в текстовом редакторе (Блокноте) и введите ваш BOT_TOKEN.")
+    print("  3. Также не забудьте перенести файлы сессий юзерботов (файлы с расширением .session),")
+    print("     если они были созданы ранее, чтобы не проходить авторизацию заново.")
+    print("="*70)
+    input("\nНажмите клавишу ENTER для выхода из программы...")
+    sys.exit("Critical Error: BOT_TOKEN is missing or placeholder.")
+
 bot = Bot(token=config.BOT_TOKEN)
 dp = Dispatcher()
 
-# Rate limiting: track last /start time per user
+# Support @router decorator as requested in Feature 1
+router = dp
+
+# In-memory rate limiting dictionary for /start command
 last_start_times = {}
 
+# -------------------------------------------------------------
+# LIFECYCLE HANDLERS
+# -------------------------------------------------------------
 
-# =============================================================================
-# STEP 1: /start command — Quiz funnel entry point
-# =============================================================================
+async def on_startup():
+    """Triggered when the bot starts polling."""
+    logger.info("Starting bot services...")
+    
+    # 1. Initialize SQLite Database Schema
+    await database.init_db()
+    
+    # 2. Start the AsyncIOScheduler
+    scheduler.scheduler.start()
+    logger.info("APScheduler started.")
+    
+    # 3. Restore all active scheduled jobs (Nudges & Warmups & Pressure Funnels)
+    await scheduler.restore_scheduled_jobs(bot)
+    
+    # 4. Start Telethon userbots and schedule auto-posting / manager followups / lead check loops
+    await scheduler.start_scheduler_tasks(bot)
+
+async def on_shutdown():
+    """Triggered when the bot stops polling."""
+    logger.info("Shutting down bot services...")
+    
+    # Safely close scheduler
+    if scheduler.scheduler.running:
+        scheduler.scheduler.shutdown(wait=True)
+        logger.info("APScheduler shut down.")
+        
+    # Close persistent database connection on shutdown
+    await database.close_db()
+
+# Global error handler decorator
+@dp.errors()
+async def global_error_handler(event: ErrorEvent):
+    logger.error(f"Unhandled exception: {event.exception}", exc_info=True)
+    return True
+
+# -------------------------------------------------------------
+# BOT MESSAGE AND CALLBACK HANDLERS
+# -------------------------------------------------------------
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message, command: CommandObject = None):
@@ -121,16 +181,13 @@ async def cmd_start(message: Message, command: CommandObject = None):
     scheduler.cancel_active_jobs_for_user(user_id)
     
     # Add/update user in DB including traffic tracking variables (will reset new quiz columns to empty/NULL)
-    # Keitaro subid — полный start_param является уникальным ID клика (e.g. AFF.122.42sasafaf43)
-    keitaro_subid = start_param
     await database.add_or_update_user(
         telegram_id=user_id,
         username=username,
         source_channel=source_channel,
         utm_source=utm_source,
         utm_campaign=utm_campaign,
-        traffic_source=traffic_source,
-        subid=keitaro_subid
+        traffic_source=traffic_source
     )
     
     # Retrieve dynamic assigned marketing persona for personalized assets
@@ -158,117 +215,249 @@ async def cmd_start(message: Message, command: CommandObject = None):
                 reply_markup=kb,
                 parse_mode="Markdown"
             )
-        except Exception as photo_err:
-            logger.warning(f"Photo send failed for {user_id}: {photo_err}. Sending text only.")
+        except Exception as e:
+            logger.error(f"Failed to send welcome photo: {e}. Falling back to text.")
             await message.answer(text=text, reply_markup=kb, parse_mode="Markdown")
     else:
         await message.answer(text=text, reply_markup=kb, parse_mode="Markdown")
 
+@dp.message(Command("admin"))
+async def cmd_admin(message: Message):
+    """Admin-only command to view real-time funnel statistics and manager-group mappings."""
+    if message.from_user.id != config.ADMIN_ID:
+        return
 
-# =============================================================================
-# STEP 2: Quiz Q1/Q2/Q3 handlers
-# =============================================================================
-
-@dp.callback_query(F.data.startswith("q1:"))
-async def handle_q1_selection(callback: CallbackQuery):
-    """Step 2a: Q1 answer selected — save and present Q2."""
-    user_id = callback.from_user.id
-    q1_value = callback.data.split(":")[1]
-    logger.info(f"User {user_id} answered Q1: {q1_value}")
-    
-    await scheduler.handle_user_activity(bot, user_id)
-    await database.save_quiz_answer(user_id, "q1", q1_value)
-    
-    user = await database.get_user(user_id)
-    persona = config.get_persona_for_user(user)
-    
-    text = config.Q2_TEXT.format(
-        persona_name=persona["name"]
+    stats = await database.get_funnel_stats()
+    text = (
+        "📊 *Статистика воронки*\n\n"
+        f"👥 Всего пользователей: {stats['total']}\n"
+        f"📩 Этап 1 (приветствие/квиз): {stats['stage_1']}\n"
+        f"📢 Этап 2 (подписка): {stats['stage_2']}\n"
+        f"✅ Этап 3 (подтвердили): {stats['stage_3']}\n"
+        f"🎁 Этап 4 (получили бонус): {stats['stage_4']}\n"
+        f"💎 Этап 5 (закрытый клуб): {stats['stage_5']}\n"
+        f"🚫 Заблокировали бота: {stats['blocked']}\n\n"
+        f"📈 Конверсия (старт→бонус): {stats['conversion']:.1f}%"
     )
-    kb = keyboards.get_q2_keyboard()
     
-    try:
-        await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="Markdown")
-    except Exception:
-        await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="Markdown")
-    await callback.answer()
-
-
-@dp.callback_query(F.data.startswith("q2:"))
-async def handle_q2_selection(callback: CallbackQuery):
-    """Step 2b: Q2 answer selected — save and present Q3 with mid-point image."""
-    user_id = callback.from_user.id
-    q2_value = callback.data.split(":")[1]
-    logger.info(f"User {user_id} answered Q2: {q2_value}")
-    
-    await scheduler.handle_user_activity(bot, user_id)
-    await database.save_quiz_answer(user_id, "q2", q2_value)
-    
-    user = await database.get_user(user_id)
-    persona = config.get_persona_for_user(user)
-    
-    text = config.Q3_TEXT.format(
-        persona_name=persona["name"]
-    )
-    kb = keyboards.get_q3_keyboard()
-    mid_image = persona["images"].get("image_3")
-    
-    try:
-        if mid_image:
-            await callback.message.edit_media(
-                media=InputMediaPhoto(media=mid_image, caption=text, parse_mode="Markdown"),
-                reply_markup=kb
-            )
+    # FEATURE 4: Fetch Multi-Group Manager Assignments mapping
+    mapping = await database.get_manager_assignments_mapping()
+    mapping_text = "\n\n👥 Менеджеры → Группы:\n"
+    for session, groups in mapping.items():
+        if not groups:
+            mapping_text += f"• {session}: —\n"
         else:
-            await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="Markdown")
-    except Exception:
-        await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="Markdown")
-    await callback.answer()
+            group_names = ", ".join([g["name"] for g in groups])
+            mapping_text += f"• {session}: {group_names}\n"
+            
+    text += mapping_text
+    await message.answer(text, parse_mode="Markdown")
 
+@dp.message(Command("admin_full"))
+async def cmd_admin_full(message: Message):
+    """Admin-only command to view detailed multi-dimensional funnel stats, quiz answers, CRM leads, and ERR engagement metrics."""
+    if message.from_user.id != config.ADMIN_ID:
+        return
 
-@dp.callback_query(F.data.startswith("q3:"))
-async def handle_q3_selection(callback: CallbackQuery):
-    """Step 2c: Q3 answer selected — resolve persona bonus, prompt subscription."""
-    user_id = callback.from_user.id
-    q3_value = callback.data.split(":")[1]
-    logger.info(f"User {user_id} answered Q3: {q3_value}")
+    stats = await database.get_full_stats()
     
+    # Stages format
+    stages_text = (
+        f"  🔹 Шаг 1 (Приветствие/Квиз): {stats['stages'][1]}\n"
+        f"  🔹 Шаг 2 (Ожидание подписки): {stats['stages'][2]}\n"
+        f"  🔹 Шаг 3 (Подтвердили, ожидают): {stats['stages'][3]}\n"
+        f"  🔹 Шаг 4 (Получили бонус): {stats['stages'][4]}\n"
+        f"  🔹 Шаг 5 (Вступили в закрытый клуб): {stats['stages'][5]}"
+    )
+    
+    # Quiz breakdowns format
+    q1_text = "\n".join([f"  🔸 {ans}: {count}" for ans, count in stats["q1_breakdown"].items()]) or "  (Нет данных)"
+    q2_text = "\n".join([f"  🔸 {ans}: {count}" for ans, count in stats["q2_breakdown"].items()]) or "  (Нет данных)"
+    q3_text = "\n".join([f"  🔸 {ans}: {count}" for ans, count in stats["q3_breakdown"].items()]) or "  (Нет данных)"
+    
+    # Popular paths format
+    paths_text = ""
+    for path in stats["popular_paths"]:
+        paths_text += f"  🔹 {path['path']} — {path['count']} раз(а)\n"
+    if not paths_text:
+        paths_text = "  (Нет данных)"
+        
+    # Channels format
+    channels_text = ""
+    for ch, count in stats["channels"].items():
+        channels_text += f"  📢 {ch}: {count}\n"
+    if not channels_text:
+        channels_text = "  (Нет данных)"
+        
+    # UTM sources format
+    utm_text = ""
+    for utm, count in stats["utm_sources"].items():
+        utm_text += f"  🔗 {utm}: {count}\n"
+    if not utm_text:
+        utm_text = "  (Нет данных)"
+        
+    text = (
+        "📊 **ПОЛНАЯ СТАТИСТИКА ВОРОНКИ (Closer & Quiz Hub)**\n\n"
+        f"👥 **Всего пользователей:** {stats['total']}\n\n"
+        "🚦 **По этапам воронки (активные):**\n"
+        f"{stages_text}\n\n"
+        "❓ **Распределение ответов квиза:**\n"
+        "👉 *Q1 (Уровень опыта):*\n"
+        f"{q1_text}\n"
+        "👉 *Q2 (Главная цель):*\n"
+        f"{q2_text}\n"
+        "👉 *Q3 (Капитал):*\n"
+        f"{q3_text}\n\n"
+        "🏆 **Топ популярных путей квиза:**\n"
+        f"{paths_text}\n"
+        "📢 **По каналам трафика:**\n"
+        f"{channels_text}\n"
+        "🎯 **По источникам (Топ-10 UTM):**\n"
+        f"{utm_text}\n"
+        "💼 **Работа с лидами:**\n"
+        f"  ✅ Передано в CRM (Closer Hub): {stats['closer_leads']}\n\n"
+        "❄️ **Удержание (Retention & Pressure Status):**\n"
+        f"  🟢 Активные (active): {stats['statuses'].get('active', 0)}\n"
+        f"  🔵 Холодные (cold): {stats['statuses'].get('cold', 0)}\n"
+        f"  🔴 Заблокировали бота: {stats['statuses'].get('blocked', 0)}\n\n"
+        "📊 ERR Аналитика:\n"
+        f"• Сообщений отправлено: {stats['messages_sent']}\n"
+        f"• Реакций получено: {stats['reactions_received']}\n"
+        f"• Ответов получено: {stats['replies_received']}\n"
+        f"• ERR: {stats['err']:.1f}%\n\n"
+        "🔥 Дожим (Pressure Funnel):\n"
+        f"• В дожиме: {stats['statuses'].get('pressure', 0)}\n"
+        f"• Потеряно: {stats['statuses'].get('lost', 0)}\n\n"
+        f"📈 **Конверсия (Старт → Бонус):** {stats['conversion']:.1f}%"
+    )
+    
+    await message.answer(text, parse_mode="Markdown")
+
+# CHANGED: Added CallbackQuery handlers for 3-step Quiz Decision Tree
+@dp.callback_query(F.data.startswith("quiz_q1:"))
+async def handle_q1_selection(callback: CallbackQuery):
+    """Handles Q1 (Experience level) callback. Saves choice and advances to Q2."""
+    user_id = callback.from_user.id
+    answer = callback.data.split(":")[1]
+    logger.info(f"User {user_id} answered Q1: {answer}")
+    
+    # Intercept user activity to pull out of pressure sequence
     await scheduler.handle_user_activity(bot, user_id)
-    await database.save_quiz_answer(user_id, "q3", q3_value)
-    await database.set_user_stage(user_id, 2)
+    
+    await database.set_user_quiz_q1(user_id, answer)
+    await callback.answer()
+    
+    q2_text = "**Вопрос 2: Какова ваша главная цель?**"
+    try:
+        # Edit caption since the start post contains a photo
+        await callback.message.edit_caption(
+            caption=q2_text,
+            reply_markup=keyboards.get_q2_keyboard(),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Failed to edit Q1 caption: {e}")
+        await callback.message.answer(text=q2_text, reply_markup=keyboards.get_q2_keyboard(), parse_mode="Markdown")
+
+@dp.callback_query(F.data.startswith("quiz_q2:"))
+async def handle_q2_selection(callback: CallbackQuery):
+    """Handles Q2 (Main Goal) callback. Saves choice, updates image to image_3 (mid-point), and advances to Q3."""
+    user_id = callback.from_user.id
+    answer = callback.data.split(":")[1]
+    logger.info(f"User {user_id} answered Q2: {answer}")
+    
+    # Intercept user activity to pull out of pressure sequence
+    await scheduler.handle_user_activity(bot, user_id)
+    
+    await database.set_user_quiz_q2(user_id, answer)
+    await callback.answer()
     
     user = await database.get_user(user_id)
     persona = config.get_persona_for_user(user)
     
-    channel_link = config.get_channel_link_for_user(user)
-    channel_name = config.get_channel_name_for_user(user)
+    # Swaps photo to image_3 (quiz mid-point visual)
+    image_3 = persona["images"].get("image_3")
+    q3_text = "**Вопрос 3: Какой ваш стартовый капитал?**"
     
-    text = config.SUBSCRIBE_PROMPT_TEXT.format(
-        persona_name=persona["name"],
+    try:
+        await callback.message.edit_media(
+            media=InputMediaPhoto(
+                media=image_3,
+                caption=q3_text,
+                parse_mode="Markdown"
+            ),
+            reply_markup=keyboards.get_q3_keyboard()
+        )
+    except Exception as e:
+        logger.error(f"Failed to edit Q2 media: {e}")
+        await callback.message.answer_photo(
+            photo=image_3,
+            caption=q3_text,
+            reply_markup=keyboards.get_q3_keyboard(),
+            parse_mode="Markdown"
+        )
+
+@dp.callback_query(F.data.startswith("quiz_q3:"))
+async def handle_q3_selection(callback: CallbackQuery):
+    """Handles Q3 (Starting Capital) callback. Saves choice, resolves personalized bonus, and displays Step 2 Sub prompt."""
+    user_id = callback.from_user.id
+    answer = callback.data.split(":")[1]
+    logger.info(f"User {user_id} answered Q3: {answer}")
+    
+    # Intercept user activity to pull out of pressure sequence
+    await scheduler.handle_user_activity(bot, user_id)
+    
+    user_data = await database.get_user(user_id)
+    persona = config.get_persona_for_user(user_data)
+    
+    q1 = user_data.get("quiz_q1", "beginner")
+    q2 = user_data.get("quiz_q2", "passive_income")
+    q3 = answer
+    
+    # Resolve the personalized bonus variant based on Q1-Q3 combinations
+    bonus_variant = config.get_personalized_bonus(persona["id"], q1, q2, q3)
+    await database.set_user_quiz_q3(user_id, q3, bonus_variant)
+    await callback.answer()
+    
+    # Schedule the subscription check nudge
+    scheduler.schedule_subscription_nudge(bot, user_id)
+    
+    # Retrieve source channel credentials
+    channel_link = config.CHANNEL_LINK
+    channel_name = config.CHANNEL_NAME
+    source_channel_id = user_data.get("source_channel")
+    if source_channel_id:
+        for ch in config.CHANNELS:
+            if ch["id"] == source_channel_id:
+                channel_link = ch["link"]
+                channel_name = ch["name"]
+                break
+                
+    text = config.SUBSCRIBE_CALL_TEXT.format(
         channel_name=channel_name
     )
-    kb = keyboards.get_subscription_keyboard(channel_link)
-    subscribe_image = persona["images"].get("image_2")
+    kb = keyboards.get_subscribe_keyboard(channel_link)
+    
+    # Retrieve image_2 (subscribe prompt photo)
+    image_2 = persona["images"].get("image_2")
     
     try:
-        if subscribe_image:
-            await callback.message.edit_media(
-                media=InputMediaPhoto(media=subscribe_image, caption=text, parse_mode="Markdown"),
-                reply_markup=kb
-            )
-        else:
-            await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="Markdown")
-    except Exception:
-        await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="Markdown")
-    await callback.answer()
-    
-    # Schedule nudge if user doesn't subscribe in time
-    await scheduler.schedule_subscription_nudge(bot, user_id)
-
-
-# =============================================================================
-# STEP 3: Subscription verification
-# =============================================================================
+        await callback.message.edit_media(
+            media=InputMediaPhoto(
+                media=image_2,
+                caption=text,
+                parse_mode="Markdown"
+            ),
+            reply_markup=kb
+        )
+    except Exception as e:
+        logger.error(f"Failed to transition to Q3 subscribe prompt: {e}")
+        await callback.message.answer_photo(
+            photo=image_2,
+            caption=text,
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
 
 @dp.callback_query(F.data == "check_subscription")
 async def handle_subscription_check(callback: CallbackQuery):
@@ -302,12 +491,7 @@ async def handle_subscription_check(callback: CallbackQuery):
             await callback.message.delete()
         except Exception as delete_err:
             logger.debug(f"Could not delete message: {delete_err}")
-
-        # Отправляем PostBack в Кейтаро для фиксации конверсии
-        user_subid = user.get("subid", "") if user else ""
-        if user_subid and config.KEITARO_POSTBACK_URL:
-            await send_keitaro_postback(user_subid, config.KEITARO_POSTBACK_URL)
-
+            
         # Transitions user to Step 4 (Auto-delivers personalized bonus) and immediately to Step 5 (Dark CTA Card)
         await scheduler.transition_to_step_4(bot, user_id)
     else:
@@ -358,86 +542,71 @@ async def on_my_chat_member_update(update: ChatMemberUpdated):
     try:
         user_id = update.from_user.id
         new_status = update.new_chat_member.status
-        
-        if new_status in ("kicked", "left"):
+        if new_status == "kicked":
+            logger.info(f"User {user_id} blocked the bot (unsubscribe event).")
             await database.set_user_blocked(user_id, True)
-            logger.info(f"User {user_id} blocked/left the bot.")
+            await database.set_user_subscription(user_id, False)
         elif new_status == "member":
+            logger.info(f"User {user_id} unblocked the bot (subscribe event).")
             await database.set_user_blocked(user_id, False)
-            logger.info(f"User {user_id} unblocked the bot.")
     except Exception as e:
-        logger.error(f"Error in on_my_chat_member_update: {e}")
+        logger.error(f"Error handling chat member update: {e}", exc_info=True)
 
-
-@dp.message_reaction()
-async def on_message_reaction(update: MessageReactionUpdated):
-    """Tracks emoji reactions for ERR analytics."""
+# FEATURE 1: MessageReactionUpdated registered via @router
+@router.message_reaction()
+async def handle_message_reaction(event: MessageReactionUpdated):
+    """Listens to message reaction additions/removals in real-time to compute the ERR."""
     try:
-        user_id = update.user.id if update.user else None
-        if user_id:
-            await database.increment_reactions(user_id)
-            logger.debug(f"Reaction from {user_id} tracked.")
+        user_id = event.chat.id
+        old_reactions = event.old_reaction or []
+        new_reactions = event.new_reaction or []
+        diff = len(new_reactions) - len(old_reactions)
+        
+        if diff != 0:
+            await database.update_user_reactions(user_id, diff)
+            logger.info(f"User {user_id} modified their reaction. Old count: {len(old_reactions)}, new count: {len(new_reactions)}. Diff: {diff}")
     except Exception as e:
-        logger.error(f"Error in on_message_reaction: {e}")
+        logger.error(f"Error in message reaction tracking: {e}", exc_info=True)
 
-
+# FEATURE 1: Catch-all handler for replies
 @dp.message()
-async def handle_any_message(message: Message):
-    """Catch-all handler for any text reply — increments reply count for ERR tracking."""
+async def handle_user_message(message: Message):
+    """Catch-all message handler to register user replies and count replies for ERR."""
     try:
+        # Ignore bot commands
+        if message.text and message.text.startswith("/"):
+            return
+            
         user_id = message.from_user.id
-        await database.increment_replies(user_id)
+        logger.info(f"Received reply from user {user_id}: {message.text or 'non-text message'}")
+        
+        # Reset pressure/cold statuses and cancel outstanding pressure jobs
         await scheduler.handle_user_activity(bot, user_id)
-        logger.debug(f"Reply from {user_id} tracked.")
+        
+        # Increment replies counter in SQLite
+        await database.increment_user_replies(user_id)
     except Exception as e:
-        logger.error(f"Error in handle_any_message: {e}")
+        logger.error(f"Error in handle_user_message reply tracking: {e}", exc_info=True)
 
-
-# =============================================================================
-# ADMIN COMMANDS
-# =============================================================================
-
-@dp.message(Command("admin"))
-async def cmd_admin(message: Message):
-    """Basic admin dashboard."""
-    if message.from_user.id != config.ADMIN_ID:
-        return
-    stats = await database.get_admin_stats()
-    text = config.format_admin_stats(stats)
-    await message.answer(text, parse_mode="Markdown")
-
-
-@dp.message(Command("admin_full"))
-async def cmd_admin_full(message: Message):
-    """Extended admin dashboard with ERR and re-engagement metrics."""
-    if message.from_user.id != config.ADMIN_ID:
-        return
-    stats = await database.get_admin_stats()
-    text = config.format_admin_stats_full(stats)
-    await message.answer(text, parse_mode="Markdown")
-
-
-# =============================================================================
-# BOT STARTUP
-# =============================================================================
-
-async def on_startup():
-    await database.init_db()
-    await scheduler.start_scheduler(bot)
-    logger.info("Bot started successfully.")
-
-
-async def on_shutdown():
-    await scheduler.stop_scheduler()
-    logger.info("Bot stopped.")
-
+# -------------------------------------------------------------
+# MAIN STARTUP FUNCTION
+# -------------------------------------------------------------
 
 async def main():
+    # Register startup and shutdown tasks in Dispatcher
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
-    logger.info("Starting bot polling...")
-    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
-
+    
+    # Begin bot polling loop
+    try:
+        await dp.start_polling(bot)
+    except Exception as e:
+        logger.critical(f"Critical error in main loop: {e}")
+    finally:
+        await bot.session.close()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot stopped by user.")
