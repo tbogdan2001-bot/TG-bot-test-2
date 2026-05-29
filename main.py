@@ -60,8 +60,21 @@ if not config.BOT_TOKEN or config.BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
     input("\nНажмите клавишу ENTER для выхода из программы...")
     sys.exit("Critical Error: BOT_TOKEN is missing or placeholder.")
 
+from aiogram.fsm.storage.redis import RedisStorage
+from redis.asyncio import Redis
+
+if config.REDIS_URL:
+    logger.info(f"Initializing Dispatcher FSM with RedisStorage on: {config.REDIS_URL}")
+    redis_client = Redis.from_url(config.REDIS_URL)
+    storage = RedisStorage(redis=redis_client)
+else:
+    logger.warning("REDIS_URL is not set. FSM will use MemoryStorage (non-persistent).")
+    from aiogram.fsm.storage.memory import MemoryStorage
+    storage = MemoryStorage()
+
 bot = Bot(token=config.BOT_TOKEN)
-dp = Dispatcher()
+dp = Dispatcher(storage=storage)
+
 
 # Support @router decorator as requested in Feature 1
 router = dp
@@ -330,7 +343,8 @@ async def cmd_admin_full(message: Message):
         f"• Сообщений отправлено: {stats['messages_sent']}\n"
         f"• Реакций получено: {stats['reactions_received']}\n"
         f"• Ответов получено: {stats['replies_received']}\n"
-        f"• ERR: {stats['err']:.1f}%\n\n"
+        f"• ERR (Общий): {stats['err']:.1f}%\n"
+        f"• ERR (За последние 7 дней): {stats['err_7d']:.1f}%\n\n"
         "🔥 Дожим (Pressure Funnel):\n"
         f"• В дожиме: {stats['statuses'].get('pressure', 0)}\n"
         f"• Потеряно: {stats['statuses'].get('lost', 0)}\n\n"
@@ -338,6 +352,91 @@ async def cmd_admin_full(message: Message):
     )
     
     await message.answer(text, parse_mode="Markdown")
+
+
+@dp.message(Command("test_closer"))
+async def cmd_test_closer(message: Message, bot: Bot):
+    """Admin command to manually test Closer Hub CRM notifications."""
+    if message.from_user.id != config.ADMIN_ID:
+        return
+        
+    await message.answer("🔄 **Запуск ручного теста Closer Hub...**")
+    user_id = message.from_user.id
+    
+    # Ensure user exists in database and simulate quiz answers
+    await database.add_or_update_user(
+        telegram_id=user_id,
+        username=message.from_user.username or "test_user",
+        traffic_source="test_campaign",
+        subid="TEST.SUBID.12345"
+    )
+    await database.set_user_quiz_q1(user_id, "🐣 Новичок")
+    await database.set_user_quiz_q2(user_id, "💰 Пассивный доход")
+    await database.set_user_quiz_q3(user_id, "💵 До $500", "bonus_defi")
+    
+    await database.set_closer_notified(user_id, 0)
+    await scheduler.notify_closer_hub(bot, user_id)
+    await message.answer("✅ **Тестовый лид отправлен в Closer Hub!** Проверьте ваш закрытый чат отдела продаж.")
+
+
+@dp.message(Command("test_pressure"))
+async def cmd_test_pressure(message: Message, bot: Bot):
+    """Admin command to manually trigger the pressure lead funnel sequence for yourself."""
+    if message.from_user.id != config.ADMIN_ID:
+        return
+        
+    await message.answer("🔄 **Запуск ручного теста дожимной Pressure-воронки...**")
+    user_id = message.from_user.id
+    
+    # Ensure user exists and simulate quiz answers
+    await database.add_or_update_user(
+        telegram_id=user_id,
+        username=message.from_user.username or "test_user",
+        traffic_source="test_campaign"
+    )
+    await database.set_user_quiz_q1(user_id, "🐣 Новичок")
+    await database.set_user_quiz_q2(user_id, "💰 Пассивный доход")
+    await database.set_user_quiz_q3(user_id, "💵 До $500", "bonus_defi")
+    
+    # Trigger pressure sequence
+    await scheduler.start_pressure_funnel(bot, user_id)
+    await message.answer("✅ **Дожим успешно запущен!** В течение нескольких минут Вам начнут приходить тестовые дожимные сообщения.")
+
+
+@dp.callback_query(F.data.startswith("take_lead:"))
+async def handle_take_lead(callback: CallbackQuery):
+    """
+    Callback handler for Closer Hub 'Взять в работу' action.
+    Marks the lead as claimed, shows a notification alert, and updates the CRM message.
+    """
+    manager = callback.from_user.username or callback.from_user.first_name
+    manager_str = f"@{manager}" if callback.from_user.username else manager
+    
+    user_id = callback.data.split(":")[1]
+    
+    # Send a prompt Telegram alert
+    await callback.answer("✅ Лид успешно взят в работу!", show_alert=True)
+    
+    # Update Closer CRM message text
+    original_text = callback.message.text or callback.message.caption or ""
+    claimed_text = f"{original_text}\n\n🤝 **Лид взят в работу менеджером:** {manager_str}"
+    
+    try:
+        # Edit text by passing reply_markup=None to remove the action button
+        await callback.message.edit_text(
+            text=claimed_text,
+            parse_mode="Markdown",
+            disable_web_page_preview=True
+        )
+    except Exception:
+        try:
+            await callback.message.edit_caption(
+                caption=claimed_text,
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.error(f"Failed to update Closer CRM message status: {e}")
+
 
 # CHANGED: Added CallbackQuery handlers for 3-step Quiz Decision Tree
 @dp.callback_query(F.data.startswith("quiz_q1:"))
@@ -610,7 +709,16 @@ async def main():
     
     # Begin bot polling loop
     try:
-        await dp.start_polling(bot)
+        await dp.start_polling(
+            bot,
+            allowed_updates=[
+                "message",
+                "callback_query",
+                "chat_member",
+                "message_reaction",
+                "my_chat_member"
+            ]
+        )
     except Exception as e:
         logger.critical(f"Critical error in main loop: {e}")
     finally:

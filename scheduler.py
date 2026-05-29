@@ -14,6 +14,7 @@ import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import pytz
 
 import config
@@ -146,7 +147,9 @@ async def send_subscription_nudge(bot: Bot, user_id: int):
     persona = config.get_persona_for_user(user)
     nudge_photo = persona["images"].get("image_2")
     
-    await safe_send(bot, user_id, config.NUDGE_TEXT, photo=nudge_photo, kb=kb)
+    sent = await safe_send(bot, user_id, config.NUDGE_TEXT, photo=nudge_photo, kb=kb)
+    if sent:
+        await database.increment_user_messages_sent(user_id)
     logger.info(f"Nudge task executed for user {user_id}")
 
 async def send_warmup_message(bot: Bot, user_id: int, sequence_index: int):
@@ -289,11 +292,16 @@ async def notify_closer_hub(bot: Bot, user_id: int):
         f"💬 [ОТКРЫТЬ ДИАЛОГ С КЛИЕНТОМ]({chat_link})"
     )
     
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🤝 Взять в работу", callback_data=f"take_lead:{user_id}")]
+    ])
+    
     try:
         await bot.send_message(
             chat_id=config.CLOSER_NOTIFY_CHAT_ID,
             text=lead_text,
             parse_mode="Markdown",
+            reply_markup=kb,
             disable_web_page_preview=True
         )
         await database.set_closer_notified(user_id, 1)
@@ -455,7 +463,9 @@ async def transition_to_step_4(bot: Bot, user_id: int):
     congrats_photo = persona["images"].get("image_4")
     
     # Deliver the bonus
-    await safe_send(bot, user_id, congrats_text, photo=congrats_photo)
+    sent_congrats = await safe_send(bot, user_id, congrats_text, photo=congrats_photo)
+    if sent_congrats:
+        await database.increment_user_messages_sent(user_id)
     logger.info(f"Successfully delivered personalized bonus '{bonus_val}' to user {user_id} (Stage 4)")
     
     # 4. Schedule progressive multi-day warm-up & long-term retention sequences
@@ -478,7 +488,9 @@ async def transition_to_step_4(bot: Bot, user_id: int):
     
     kb = keyboards.get_dark_cta_keyboard(config.PRIVATE_CLUB_LINK)
     
-    await safe_send(bot, user_id, cta_text, photo=dark_photo, kb=kb)
+    sent_dark = await safe_send(bot, user_id, cta_text, photo=dark_photo, kb=kb)
+    if sent_dark:
+        await database.increment_user_messages_sent(user_id)
     logger.info(f"Successfully transitioned user {user_id} to Step 5 (Dark CTA Card delivered)")
 
 # -------------------------------------------------------------

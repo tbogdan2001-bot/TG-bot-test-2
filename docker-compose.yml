@@ -13,3 +13,16 @@ services:
       # Persistent SQLite database and log storage on the host
       - ./funnel_bot.db:/app/funnel_bot.db
       - ./bot.log:/app/bot.log
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:alpine
+    container_name: tg_funnel_redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+
+volumes:
+  redis_data:
+

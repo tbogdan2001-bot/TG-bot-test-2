@@ -7,6 +7,13 @@ import sys
 import shutil
 import subprocess
 
+def safe_input(prompt=""):
+    if sys.stdin and sys.stdin.isatty():
+        return input(prompt)
+    print(prompt)
+    return ""
+
+
 def main():
     print("===================================================")
     print("   СТАРТ СБОРКИ TELEGRAM-БОТА В .EXE ФАЙЛ (Python-Сборщик)")
@@ -22,7 +29,7 @@ def main():
         subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt", "pyinstaller"], check=True)
     except subprocess.CalledProcessError as e:
         print(f"\n❌ Ошибка при установке зависимостей: {e}")
-        input("\nНажмите клавишу ENTER для выхода...")
+        safe_input("\nНажмите клавишу ENTER для выхода...")
         sys.exit(1)
         
     # 3. Compile with PyInstaller
@@ -60,7 +67,7 @@ def main():
         subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError as e:
         print(f"\n❌ Ошибка при компиляции PyInstaller: {e}")
-        input("\nНажмите клавишу ENTER для выхода...")
+        safe_input("\nНажмите клавишу ENTER для выхода...")
         sys.exit(1)
         
     # 4. Copy configuration files
@@ -93,7 +100,7 @@ def main():
     print("\n   1. Откройте появившуюся папку \"dist\"")
     print("   2. Запустите \"telegram_funnel_bot.exe\"")
     print("===================================================")
-    input("\nНажмите клавишу ENTER для выхода...")
+    safe_input("\nНажмите клавишу ENTER для выхода...")
 
 if __name__ == "__main__":
     main()

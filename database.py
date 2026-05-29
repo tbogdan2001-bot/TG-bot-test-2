@@ -432,6 +432,19 @@ async def get_full_stats() -> dict:
         
     err_ratio = (reactions_received + replies_received) / messages_sent * 100 if messages_sent > 0 else 0.0
             
+    # 10. ERR за последние 7 дней
+    async with db.execute("""
+        SELECT SUM(messages_sent), SUM(reactions_received), SUM(replies_received) 
+        FROM users 
+        WHERE (julianday('now') - julianday(дата_входа)) <= 7
+    """) as cursor:
+        row_7d = await cursor.fetchone()
+        messages_sent_7d = row_7d[0] or 0
+        reactions_received_7d = row_7d[1] or 0
+        replies_received_7d = row_7d[2] or 0
+        
+    err_ratio_7d = (reactions_received_7d + replies_received_7d) / messages_sent_7d * 100 if messages_sent_7d > 0 else 0.0
+
     conversion = ((stage_counts[4] + stage_counts[5]) / total) * 100 if total > 0 else 0.0
     
     return {
@@ -449,7 +462,8 @@ async def get_full_stats() -> dict:
         "messages_sent": messages_sent,
         "reactions_received": reactions_received,
         "replies_received": replies_received,
-        "err": err_ratio
+        "err": err_ratio,
+        "err_7d": err_ratio_7d
     }
 
 # NEW: Added tables and query helper functions for Channel Autoposting and Multi-Account Manager Systems
@@ -607,16 +621,15 @@ async def get_manager_assignments_mapping() -> dict[str, list[dict]]:
     return mapping
 
 async def get_inactive_leads_for_pressure() -> list[int]:
-    """Retrieves list of user IDs who are cold or inactive in stage 2/3 for 3+ days, eligible for pressure funnel."""
+    """Retrieves list of user IDs eligible for pressure funnel: stuck in stage 4 for >24 hours."""
     db = get_db()
-    # Using julianday to count the days since join date (дата_входа)
     async with db.execute("""
         SELECT telegram_id FROM users
         WHERE is_blocked = 0 
           AND status NOT IN ('pressure', 'lost', 'blocked')
           AND (
               status = 'cold' 
-              OR (этап_воронки IN (2, 3) AND (julianday('now') - julianday(дата_входа)) >= 3)
+              OR (этап_воронки = 4 AND (julianday('now') - julianday(дата_входа)) >= 1.0)
           )
     """) as cursor:
         rows = await cursor.fetchall()

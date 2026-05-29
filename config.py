@@ -184,6 +184,13 @@ PRIVATE_CLUB_LINK = os.getenv("PRIVATE_CLUB_LINK", "https://t.me/+joinchat_examp
 # Keitaro PostBack URL configuration loaded from environment
 KEITARO_POSTBACK_URL = os.getenv("KEITARO_POSTBACK_URL", "")
 
+# Redis Connection URL
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+
+# Closer Telegram Username (for Day 30 retention link)
+CLOSER_USERNAME = os.getenv("CLOSER_USERNAME", "example_closer_username")
+
+
 # CHANGED: Multi-Account Persona Support Configuration Profiles expanded to 5 images
 PERSONAS = {
     "alexander": {
@@ -192,11 +199,11 @@ PERSONAS = {
         "description": "Опытный криптоинвестор с 7-летним стажем и основатель закрытого клуба",
         "niche": "криптовалюты, арбитраж трафика и пассивный доход",
         "images": {
-            "image_1": "https://images.unsplash.com/photo-1621761191319-c6fb62004040?w=1080",
-            "image_2": "https://images.unsplash.com/photo-1579621970563-ebec7560ff3e?w=1080",
-            "image_3": "https://images.unsplash.com/photo-1642790106117-e829e14a795f?w=1080",  # Quiz mid-point chart visual
-            "image_4": "https://images.unsplash.com/photo-1513151233558-d860c5398176?w=1080",  # Congrats
-            "image_5": "https://images.unsplash.com/photo-1518546305927-5a555bb7020d?w=1080",  # Dark style final CTA card
+            "image_1": os.getenv("ALEXANDER_IMAGE_1", "https://images.unsplash.com/photo-1621761191319-c6fb62004040?w=1080"),
+            "image_2": os.getenv("ALEXANDER_IMAGE_2", "https://images.unsplash.com/photo-1579621970563-ebec7560ff3e?w=1080"),
+            "image_3": os.getenv("ALEXANDER_IMAGE_3", "https://images.unsplash.com/photo-1642790106117-e829e14a795f?w=1080"),  # Quiz mid-point chart visual
+            "image_4": os.getenv("ALEXANDER_IMAGE_4", "https://images.unsplash.com/photo-1513151233558-d860c5398176?w=1080"),  # Congrats
+            "image_5": os.getenv("ALEXANDER_IMAGE_5", "https://images.unsplash.com/photo-1518546305927-5a555bb7020d?w=1080"),  # Dark style final CTA card
         },
         "bonus_options": [
             {"label": "🎁 Секретный DeFi Гайд", "value": "bonus_defi"},
@@ -229,11 +236,11 @@ PERSONAS = {
         "description": "Эксперт по инвестициям в зарубежную недвижимость и пассивному доходу",
         "niche": "инвестиции в недвижимость Бали, Дубая и Таиланда",
         "images": {
-            "image_1": "https://images.unsplash.com/photo-1580587771525-78b9dba3b914?w=1080",
-            "image_2": "https://images.unsplash.com/photo-1560518883-ce09059eeffa?w=1080",
-            "image_3": "https://images.unsplash.com/photo-1503387762-592deb58ef4e?w=1080",  # Quiz mid-point real estate/architectural chart
-            "image_4": "https://images.unsplash.com/photo-1512403754473-278556139b0a?w=1080",  # Congrats
-            "image_5": "https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?w=1080",  # Dark luxury estate final CTA card
+            "image_1": os.getenv("ELENA_IMAGE_1", "https://images.unsplash.com/photo-1580587771525-78b9dba3b914?w=1080"),
+            "image_2": os.getenv("ELENA_IMAGE_2", "https://images.unsplash.com/photo-1560518883-ce09059eeffa?w=1080"),
+            "image_3": os.getenv("ELENA_IMAGE_3", "https://images.unsplash.com/photo-1503387762-592deb58ef4e?w=1080"),  # Quiz mid-point real estate/architectural chart
+            "image_4": os.getenv("ELENA_IMAGE_4", "https://images.unsplash.com/photo-1512403754473-278556139b0a?w=1080"),  # Congrats
+            "image_5": os.getenv("ELENA_IMAGE_5", "https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?w=1080"),  # Dark luxury estate final CTA card
         },
         "bonus_options": [
             {"label": "🎁 Каталог: ТОП-5 вилл 2026", "value": "bonus_villas"},
@@ -456,7 +463,7 @@ RETENTION_PLAN = [
             "Осталось последнее свободное место со скидкой 50%. Если вы хотите начать зарабатывать под моим руководством — нажимайте кнопку ниже прямо сейчас! 👇"
         ),
         "keyboard": [
-            [{"text": "📥 Занять место", "url": "https://t.me/example_closer_username"}]
+            [{"text": "📥 Занять место", "url": f"https://t.me/{CLOSER_USERNAME}"}]
         ]
     }
 ]
@@ -542,7 +549,7 @@ PRESSURE_PLAN = [
         ),
         "image": "https://images.unsplash.com/photo-1553729459-beb747028b4e?w=1080",
         "keyboard": [
-            [{"text": "📥 Вступить по спец. условиям", "url": "https://t.me/example_closer_username"}]
+            [{"text": "📥 Вступить по спец. условиям", "url": f"https://t.me/{CLOSER_USERNAME}"}]
         ]
     },
     {
